@@ -34,7 +34,9 @@ for s in express spring-boot aspnet-core config; do
 done
 
 # 2. A GitHub App for publishing, installed on those four repositories only, with
-#    Repository permissions → Contents: Read and write (nothing else).
+#    Repository permissions → Contents: Read and write, and Workflows: Read and write (nothing else).
+#    Workflows is required because every starter carries .github/workflows/ files; GitHub refuses a
+#    push that adds or changes a workflow file from an App without it.
 gh variable set STARTERS_PUBLISH_APP_ID -R thoryn-io/thoryn-starters --body '<app id>'
 gh secret set STARTERS_PUBLISH_APP_PRIVATE_KEY -R thoryn-io/thoryn-starters < publish-app.private-key.pem
 ```
