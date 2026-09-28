@@ -1,0 +1,64 @@
+# thoryn-starters CI: every starter is built, unit-tested, rendered through the render contract and — once
+# the staging workload identity trusts exist — run end to end against staging. A published template can
+# therefore never be broken (publish.yml only runs after this workflow is green on main).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tooling:
+    name: Render contract, shared files, workflow lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Renderer, app-env and test-inbox unit tests
+        run: npm test
+      - name: Shared files in sync; every starter renders and validates against the CLI schemas
+        run: npm run check
+      - name: actionlint (this repository's and every starter's workflows)
+        run: |
+          set -euo pipefail
+          v=1.7.12
+          curl -fsSL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${v}/actionlint_${v}_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -color .github/workflows/*.yml starters/*/.github/workflows/*.yml
+
+  express:
+    name: express — build and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starters/express
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: starters/express/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  express-e2e:
+    name: express — staging e2e
+    needs: [tooling, express]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stack-e2e.yml
+    with:
+      stack: express
+      wif-client-id: ${{ vars.THORYN_STARTERS_WIF_EXPRESS }}

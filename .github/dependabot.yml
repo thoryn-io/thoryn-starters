@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/starters/*"]
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directories: ["/", "/shared/e2e", "/starters/*", "/starters/*/e2e"]
+    schedule: { interval: weekly }
+    groups:
+      npm: { patterns: ["*"] }

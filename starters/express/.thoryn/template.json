@@ -1,0 +1,45 @@
+{
+  "apiVersion": "thoryn.io/starter-template/v1",
+  "kind": "application",
+  "description": "An APPLICATION project: one web app, its OAuth application client and its own sandbox test user. It declares no environment and no workspace configuration (that is the workspace's CONFIG project). Render the files below, then delete this manifest.",
+  "variables": {
+    "workspace": {
+      "description": "Slug of the Thoryn workspace the application belongs to.",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "example": "acme"
+    },
+    "environment": {
+      "description": "Slug of the SANDBOX environment the application's client and test user live in, and that the workload identity trust is bound to.",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "example": "dev"
+    },
+    "workloadIdentityClientId": {
+      "description": "clientId (wi_…) of the workload identity trust created for this repository in that environment.",
+      "pattern": "^wi_[A-Za-z0-9_-]{1,64}$",
+      "example": "wi_0123456789abcdef01234567"
+    },
+    "githubOwner": {
+      "description": "GitHub user or organization that owns the repository (the trust's pinned owner).",
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$",
+      "example": "acme"
+    },
+    "githubRepository": {
+      "description": "Repository name, without the owner (the trust's pinned repository).",
+      "pattern": "^(?!\\.\\.?$)[A-Za-z0-9._-]{1,100}$",
+      "example": "billing-web"
+    },
+    "appName": {
+      "description": "Display name of the OAuth application client. It is the client's converge key inside the environment, so keep it unique per environment.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$",
+      "example": "billing-web"
+    }
+  },
+  "files": [
+    ".thoryn/connection.json",
+    ".thoryn/provision.yaml",
+    "README.md"
+  ],
+  "actionsVariables": {
+    "THORYN_ISSUER": "Platform base issuer the thoryn CLI signs in to, e.g. https://auth.stg.thoryn.org. Required until the CLI ships a built-in production issuer. Not the application's issuer: that one is resolved at run time (.thoryn/app-env.mjs)."
+  }
+}
