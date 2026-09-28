@@ -32,9 +32,17 @@ No file holds a secret. CI exchanges each job's short-lived GitHub OIDC token fo
   1. production runs `plan` then `apply`, in the GitHub environment `{{thoryn.githubEnvironment}}`;
   2. then every sandbox runs `plan` then `apply`.
 
-Add required reviewers to the GitHub environment `{{thoryn.githubEnvironment}}` (Settings → Environments)
-to approve every production change. The production trust refuses pull requests, so production is never
-planned from a pull request: the production plan is printed on `main`, right before the apply.
+**Every production run needs a reviewer's approval.** The production CI client holds `manager` on the
+whole workspace (creating environments needs it), so it is contained three ways:
+
+- it only runs from `main`;
+- only in the GitHub environment `{{thoryn.githubEnvironment}}`, which the production trust pins;
+- and that environment has required reviewers, so a person approves every production run.
+
+A project created by Thoryn's starter flow already has the environment set up with required reviewers
+and restricted to `main`. If you created this repository yourself, add them under Settings → Environments
+before the first push to `main`. The production trust refuses pull requests, so production is never
+planned from a pull request: the production plan is printed on `main`, right before the approval and the apply.
 
 The workflow needs one repository variable, `THORYN_ISSUER`, the platform base issuer (for example
 `https://auth.stg.thoryn.org`). It skips with a notice while that is not set.
