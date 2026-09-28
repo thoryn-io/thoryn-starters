@@ -78,7 +78,7 @@ jobs:
       - if: inputs.stack == 'aspnet-core'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: starters/aspnet-core/global.json
       - name: Render the starter with the staging fixture (the render contract)
         env:
           WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}

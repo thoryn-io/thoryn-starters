@@ -89,3 +89,27 @@ jobs:
     with:
       stack: spring-boot
       wif-client-id: ${{ vars.THORYN_STARTERS_WIF_SPRING_BOOT }}
+
+  aspnet-core:
+    name: aspnet-core — build and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starters/aspnet-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: starters/aspnet-core/global.json
+      - run: dotnet test --solution ThorynStarter.slnx
+
+  aspnet-core-e2e:
+    name: aspnet-core — staging e2e
+    needs: [tooling, aspnet-core]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stack-e2e.yml
+    with:
+      stack: aspnet-core
+      wif-client-id: ${{ vars.THORYN_STARTERS_WIF_ASPNET_CORE }}
