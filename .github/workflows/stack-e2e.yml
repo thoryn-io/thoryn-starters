@@ -125,5 +125,7 @@ jobs:
           retention-days: 7
       - name: Remove what this run created
         if: always()
-        working-directory: ${{ env.REPO_DIR }}
-        run: '[ -d .thoryn ] && .thoryn/ci/teardown.sh || true'
+        run: |
+          if [ -d "$REPO_DIR/.thoryn" ]; then
+            cd "$REPO_DIR" && .thoryn/ci/teardown.sh
+          fi
