@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// The application starters share their e2e journey, the CI scripts, app-env.mjs and the template manifest.
+// The application starters share their e2e journey, the CI scripts, app-env.mjs, the template manifest and
+// their .thoryn/ connection and provisioning templates.
 // `shared/` is the single source; this script copies it into every application starter. The published
 // templates must be self-contained, so the copies are committed — and `--check` (CI) fails on any drift.
 //
@@ -23,6 +24,8 @@ const MAPPINGS = [
   ["e2e/lib", "e2e/lib"],
   ["thoryn/app-env.mjs", ".thoryn/app-env.mjs"],
   ["thoryn/template.json", ".thoryn/template.json"],
+  ["thoryn/connection.json", ".thoryn/connection.json"],
+  ["thoryn/provision.yaml", ".thoryn/provision.yaml"],
   ["thoryn/ci", ".thoryn/ci"],
 ];
 
