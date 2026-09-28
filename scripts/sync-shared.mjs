@@ -39,12 +39,16 @@ function files(path) {
   return out;
 }
 
+/** The config starter shares only the CLI installer. */
+const CONFIG_MAPPINGS = [["thoryn/ci/install-cli.sh", ".thoryn/ci/install-cli.sh"]];
+
 export function plan() {
   const pairs = [];
-  for (const starter of APPLICATION_STARTERS) {
+  const targets = [...APPLICATION_STARTERS.map((s) => [s, MAPPINGS]), ["config", CONFIG_MAPPINGS]];
+  for (const [starter, mappings] of targets) {
     const dir = join(root, "starters", starter);
     if (!existsSync(dir)) continue;
-    for (const [from, to] of MAPPINGS) {
+    for (const [from, to] of mappings) {
       const src = join(root, "shared", from);
       for (const f of files(src)) pairs.push([f ? join(src, f) : src, f ? join(dir, to, f) : join(dir, to)]);
     }

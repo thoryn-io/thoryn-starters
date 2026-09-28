@@ -9,6 +9,7 @@ apply`, the Playwright sign-in journey, teardown. It skips with a notice until t
 - One workspace for this repository's CI (below: `starters`).
 - One sandbox per application starter, `ci-<starter>`: `ci-express`, `ci-spring-boot`, `ci-aspnet-core`.
   Separate sandboxes let the stacks run in parallel without converging the same resources.
+- A sandbox `ci-config` for the config starter, whose sandbox section CI only plans.
 - In each sandbox, a workload identity trust pinned to `thoryn-io/thoryn-starters`, with exactly the scopes
   an application project's `.thoryn/connection.json` requests, and `manager` on that sandbox for the
   trust's client.
@@ -47,6 +48,14 @@ gh variable set THORYN_STARTERS_WORKSPACE -R thoryn-io/thoryn-starters --body st
 gh variable set THORYN_STARTERS_WIF_EXPRESS     -R thoryn-io/thoryn-starters --body '<wi_express>'
 gh variable set THORYN_STARTERS_WIF_SPRING_BOOT -R thoryn-io/thoryn-starters --body '<wi_spring_boot>'
 gh variable set THORYN_STARTERS_WIF_ASPNET_CORE -R thoryn-io/thoryn-starters --body '<wi_aspnet_core>'
+
+# The config starter: CI only PLANS its sandbox section (read-only); it never touches a production plane.
+thoryn env create ci-config --name "Sandbox ci-config"
+thoryn workload-identity trusts create --environment ci-config --name thoryn-starters-config \
+  --repository thoryn-io/thoryn-starters --github-hosted-runners-only \
+  --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write
+thoryn access grant client:<wi_config> manager environment:<ci-config id>
+gh variable set THORYN_STARTERS_WIF_CONFIG -R thoryn-io/thoryn-starters --body '<wi_config>'
 # Optional: pin the CLI release the jobs install (default: the latest cli-v* release).
 gh variable set THORYN_CLI_VERSION -R thoryn-io/thoryn-starters --body 'cli-v<a release with SSO-3308>'
 ```

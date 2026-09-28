@@ -1,0 +1,113 @@
+# Converge the workspace configuration, one environment section at a time, with no stored secret.
+#
+#   pull request → `thoryn provision plan` for every sandbox section (read-only)
+#   push to main → production: plan + apply, in the GitHub environment its trust pins
+#                  then every sandbox: plan + apply
+#
+# Each section signs in with its own workload identity trust (.thoryn/environments/<section>/connection.json).
+# Production trusts refuse pull_request jobs, so production is never touched from a pull request; protect
+# its GitHub environment with required reviewers to approve every production change.
+# Repository variable: THORYN_ISSUER (the platform base issuer, e.g. https://auth.stg.thoryn.org).
+name: Thoryn configuration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thoryn-configuration
+  cancel-in-progress: false
+
+jobs:
+  sections:
+    name: Sections
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+      sandboxes: ${{ steps.check.outputs.sandboxes }}
+      production-github-environment: ${{ steps.check.outputs.production-github-environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: check
+        env:
+          THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+          FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+        run: |
+          set -euo pipefail
+          sandboxes="$(find .thoryn/environments -mindepth 1 -maxdepth 1 -type d ! -name production -printf '%f\n' | sort | jq -R . | jq -cs .)"
+          echo "sandboxes=$sandboxes" >> "$GITHUB_OUTPUT"
+          echo "production-github-environment=$(jq -r '.auth.github.environment // ""' .thoryn/environments/production/connection.json)" >> "$GITHUB_OUTPUT"
+          if [ -f .thoryn/template.json ]; then
+            echo "::notice::This is the unrendered starter template; the Thoryn jobs run once the repository is created from it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$THORYN_ISSUER" ]; then
+            echo "::notice::Set the THORYN_ISSUER repository variable to run the Thoryn jobs."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$FORK" = "true" ]; then
+            echo "::notice::Pull requests from forks get no GitHub OIDC token; the Thoryn jobs are skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  production:
+    name: production — plan + apply
+    needs: sections
+    if: needs.sections.outputs.ready == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.sections.outputs.production-github-environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      SECTION: .thoryn/environments/production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the thoryn CLI
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
+        run: thoryn login --connection "$SECTION/connection.json"
+      - name: Plan
+        run: thoryn provision plan --file "$SECTION/provision.yaml"
+      - name: Apply
+        run: thoryn provision apply --file "$SECTION/provision.yaml" --yes
+
+  sandbox:
+    name: ${{ matrix.section }} — ${{ github.event_name == 'pull_request' && 'plan' || 'plan + apply' }}
+    needs: [sections, production]
+    # After production (which declares the environments) on main; on its own for a pull request.
+    if: >-
+      always() && needs.sections.outputs.ready == 'true' && needs.sections.outputs.sandboxes != '[]'
+      && (needs.production.result == 'success' || needs.production.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        section: ${{ fromJSON(needs.sections.outputs.sandboxes) }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      SECTION: .thoryn/environments/${{ matrix.section }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the thoryn CLI
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
+        run: thoryn login --connection "$SECTION/connection.json"
+      - name: Plan
+        run: thoryn provision plan --file "$SECTION/provision.yaml"
+      - name: Apply
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: thoryn provision apply --file "$SECTION/provision.yaml" --yes
