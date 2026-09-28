@@ -1,0 +1,35 @@
+# Settings come from the environment. `./mvnw spring-boot:run` also reads .env, written by
+# `node .thoryn/app-env.mjs --write .env` after `thoryn provision apply`.
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  security:
+    oauth2:
+      client:
+        registration:
+          thoryn:
+            client-id: ${OIDC_CLIENT_ID:}
+            client-authentication-method: none   # public client: PKCE instead of a secret
+            authorization-grant-type: authorization_code
+            redirect-uri: ${starter.base-url}/callback
+            scope: ${OIDC_SCOPE:openid,profile,email}
+        provider:
+          thoryn:
+            issuer-uri: ${OIDC_ISSUER:}
+
+starter:
+  issuer: ${OIDC_ISSUER:}
+  client-id: ${OIDC_CLIENT_ID:}
+  audience: ${OIDC_AUDIENCE:}
+  base-url: ${APP_BASE_URL:http://127.0.0.1:${server.port}}
+
+server:
+  address: ${HOST:127.0.0.1}
+  port: ${PORT:8080}
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+        # Secure whenever the app is served over https; plain http is for loopback development only.
+        secure: ${COOKIE_SECURE:false}
