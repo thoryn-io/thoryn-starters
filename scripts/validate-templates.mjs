@@ -9,7 +9,8 @@
 //  - every connection's variables are declared, its provisioning file exists and validates against the
 //    CLI's provisioning schema, and every `{{env.NAME}}` in it is a declared variable or a run-time value;
 //  - an APPLICATION project declares only application and user resources, all in the sandbox its
-//    connection names; a CONFIG project's production section declares every sandbox, and each sandbox
+//    connection names, and its client accepts the app's default local callbacks (SSO-3445); plain-http
+//    redirect URIs are loopback-only and only ever on a sandbox client, never on production; a CONFIG project's production section declares every sandbox, and each sandbox
 //    section converges only its own sandbox;
 //  - the workflows read only declared variables (plus THORYN_CLI_VERSION), read every one of them, request
 //    `id-token: write`, read no secret, and run the shared CI steps.
@@ -52,6 +53,9 @@ const RUNTIME_ENV = new Set(["THORYN_APP_NAME", "THORYN_TEST_USER_EMAIL", "THORY
 /** Optional variables a workflow may read without declaring them. */
 const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION"]);
 const APP_KINDS = new Set(["application", "user"]);
+/** Every application starter listens on 127.0.0.1:8080 by default (PORT / APP_BASE_URL override it). */
+export const LOCAL_PORT = 8080;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
 const ENV_REF = /\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
 function walk(dir, visit) {
@@ -156,6 +160,30 @@ export function checkStarter(dir, schemas) {
     if (manifest.kind === "application") {
       for (const r of resources) {
         if (!APP_KINDS.has(r.kind)) fail(`${c.provisionFile}: an application project must not declare a '${r.kind}' (that belongs to the workspace config project)`);
+      }
+      // SSO-3445 — works out of the box locally: the sandbox client accepts the app's default local
+      // callbacks, on 127.0.0.1 (any port, RFC 8252) and on localhost at the default port (matched exactly).
+      const web = resources.find((r) => r.kind === "application" && r.name === "web");
+      for (const [field, path] of [["redirectUris", "/callback"], ["postLogoutRedirectUris", "/signed-out"]]) {
+        for (const uri of [`http://127.0.0.1${path}`, `http://localhost:${LOCAL_PORT}${path}`]) {
+          if (!(web?.spec?.[field] ?? []).includes(uri)) fail(`${c.provisionFile}: application/web ${field} must include ${uri} (local development)`);
+        }
+      }
+    }
+    // Plain-http redirect URIs are local-development only: loopback hosts, and only on a sandbox client.
+    for (const r of resources.filter((x) => x.kind === "application")) {
+      for (const uri of [...(r.spec?.redirectUris ?? []), ...(r.spec?.postLogoutRedirectUris ?? [])]) {
+        let u;
+        try {
+          u = new URL(uri);
+        } catch {
+          fail(`${c.provisionFile}: application/${r.name} has an unparseable redirect URI ${uri}`);
+          continue;
+        }
+        if (u.protocol !== "http:") continue;
+        if (!LOOPBACK_HOSTS.has(u.hostname)) fail(`${c.provisionFile}: application/${r.name} ${uri}: plain http is for loopback development only`);
+        if (!r.environment) fail(`${c.provisionFile}: application/${r.name} ${uri}: a local-development redirect URI belongs on a sandbox client, never on production`);
+        if (u.hostname === "localhost" && !u.port) fail(`${c.provisionFile}: application/${r.name} ${uri}: the platform matches localhost exactly, so name the port`);
       }
     }
   }

@@ -76,3 +76,26 @@ test("the config production section must declare every sandbox connection's envi
   edit(dir, ".thoryn/environments/production/provision.yaml", (t) => t.replace('slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"', 'slug: "dev"'));
   assert.match(checkStarter(dir, schemas).join("\n"), /does not declare the sandbox \{\{env\.THORYN_SANDBOX_ENVIRONMENT\}\}/);
 });
+
+test("the application's sandbox client must accept the default local callbacks on 127.0.0.1 and localhost:8080", () => {
+  const dir = copy("express");
+  edit(dir, ".thoryn/provision.yaml", (t) => t.replace('        - "http://localhost:8080/callback"\n', ""));
+  assert.match(checkStarter(dir, schemas).join("\n"), /redirectUris must include http:\/\/localhost:8080\/callback/);
+});
+
+test("a plain-http redirect URI is loopback-only, names the localhost port, and never sits on a production client", () => {
+  const dir = copy("express");
+  edit(dir, ".thoryn/provision.yaml", (t) =>
+    t.replace('"http://localhost:8080/signed-out"', '"http://localhost/signed-out"').replace('"http://127.0.0.1/signed-out"', '"http://app.example.com/signed-out"'));
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /http:\/\/app\.example\.com\/signed-out: plain http is for loopback development only/);
+  assert.match(problems, /http:\/\/localhost\/signed-out: the platform matches localhost exactly, so name the port/);
+
+  const config = copy("config");
+  edit(config, ".thoryn/environments/production/provision.yaml", (t) => t.replace("resources:\n", `resources:
+  - kind: application
+    name: local
+    spec: { displayName: "x", redirectUris: ["http://localhost:8080/callback"] }
+`));
+  assert.match(checkStarter(config, schemas).join("\n"), /belongs on a sandbox client, never on production/);
+});

@@ -21,9 +21,18 @@ resources:
       clientType: public                  # server-side app, but no secret to store: PKCE proves the client
       grantTypes: ["authorization_code"]
       scopes: ["openid", "profile", "email"]
-      # RFC 8252 loopback URIs: the platform ignores the port, so any local port works.
-      redirectUris: ["http://127.0.0.1/callback"]
-      postLogoutRedirectUris: ["http://127.0.0.1/signed-out"]
+      # Local development (a SANDBOX client only; never register these on production):
+      #  - http://127.0.0.1/…: RFC 8252 loopback URIs; the platform ignores their port, so any port works.
+      #    This is what the app uses by default (it listens on and redirects to http://127.0.0.1:8080).
+      #  - http://localhost:8080/…: `localhost` is a name, so the platform matches it exactly, port
+      #    included. Use it with APP_BASE_URL=http://localhost:8080 (the app's default port and paths).
+      # Add your deployed https URLs next to these when you deploy the app.
+      redirectUris:
+        - "http://127.0.0.1/callback"
+        - "http://localhost:8080/callback"
+      postLogoutRedirectUris:
+        - "http://127.0.0.1/signed-out"
+        - "http://localhost:8080/signed-out"
 
   - kind: user
     name: test-user

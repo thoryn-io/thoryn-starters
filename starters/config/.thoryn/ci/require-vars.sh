@@ -26,7 +26,15 @@ for name in "${missing[@]}"; do
     const level = v.level === "environment" ? `a variable of the GitHub environment "${v.environment}"` : "a repository variable";
     console.log(`${level}: ${v.description}`);
   ' "$manifest" "$name" 2>/dev/null || true)"
-  msg="$name is not set. In GitHub Actions it is ${where:-a repository variable} (Settings → Secrets and variables → Actions → Variables); the workflow reads it as \${{ vars.$name }}. For a local run, export $name."
+  if [ -n "$where" ]; then
+    msg="$name is not set. In GitHub Actions it is $where (Settings → Secrets and variables → Actions → Variables); the workflow reads it as \${{ vars.$name }}. For a local run, export $name."
+    case "$name" in
+      THORYN_ISSUER|THORYN_WORKSPACE) msg="$msg (or sign in first: thoryn login --issuer <platform> --workspace <workspace>)" ;;
+      THORYN_ENVIRONMENT) msg="$msg (or select it: thoryn workspace switch <workspace> && thoryn env use <sandbox>)" ;;
+    esac
+  else
+    msg="$name is not set. Export $name."
+  fi
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "::error title=Thoryn variable $name is not set::$msg"
   else

@@ -132,3 +132,45 @@ test("provision.sh stops before signing in when a variable is missing, outside A
   assert.match(res.stderr, /error: THORYN_ENVIRONMENT is not set\..*export THORYN_ENVIRONMENT/);
   assert.throws(() => r.args(), /ENOENT/);
 });
+
+/** A repository with app-env.mjs too, and a `thoryn` that answers `whoami` like a signed-in session. */
+function localRepo(whoami) {
+  const r = repo("express");
+  cpSync(join(root, "shared/thoryn/app-env.mjs"), join(r.dir, ".thoryn/app-env.mjs"));
+  const log = join(r.dir, "thoryn.log");
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash
+if [ "$1" = "whoami" ]; then printf '%s' '${JSON.stringify(whoami)}'; exit 0; fi
+echo "$* | ws=$THORYN_WORKSPACE env=$THORYN_ENVIRONMENT app=$THORYN_APP_NAME" >> "${log}"
+`);
+  chmodSync(join(r.bin, "thoryn"), 0o755);
+  return { ...r, calls: () => readFileSync(log, "utf8").trim().split("\n") };
+}
+
+test("provision.sh runs locally from the thoryn login session: no Actions variable, its own local client", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  const res = run(r, "provision.sh", [], { USER: "dana", THORYN_TEST_USER_EMAIL: "dana+test@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.match(res.stdout, /Local run: workspace acme, sandbox dev/);
+  assert.doesNotMatch(res.stdout, /::add-mask::/);
+  const calls = r.calls();
+  const app = `${r.dir.split("/").pop()}-local-dana`;
+  assert.deepEqual(calls, [
+    `provision plan --file .thoryn/provision.yaml | ws=acme env=dev app=${app}`,
+    `provision apply --file .thoryn/provision.yaml --yes | ws=acme env=dev app=${app}`,
+  ]);
+  assert.ok(!calls.some((c) => c.startsWith("login")), "a local run uses your own session, never workload identity");
+});
+
+test("provision.sh locally: an exported value wins over the session, and a missing sandbox or test user is named", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  run(r, "provision.sh", [], { THORYN_ENVIRONMENT: "qa", THORYN_TEST_USER_EMAIL: "a@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.match(r.calls()[0], /env=qa/);
+
+  const noEnv = localRepo({ issuer: "https://acme.auth.stg.thoryn.org" });
+  const res = run(noEnv, "provision.sh", [], { THORYN_TEST_USER_EMAIL: "a@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /THORYN_ENVIRONMENT is not set.*thoryn env use <sandbox>/);
+
+  const noUser = run(localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" }), "provision.sh", [], {});
+  assert.equal(noUser.status, 1);
+  assert.match(noUser.stderr, /THORYN_TEST_USER_EMAIL is not set\. Export THORYN_TEST_USER_EMAIL\./);
+});
