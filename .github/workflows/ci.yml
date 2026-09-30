@@ -113,3 +113,53 @@ jobs:
     with:
       stack: aspnet-core
       wif-client-id: ${{ vars.THORYN_STARTERS_WIF_ASPNET_CORE }}
+
+  config-plan:
+    name: config — staging plan (sandbox section)
+    needs: tooling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
+      WIF_CLIENT_ID: ${{ vars.THORYN_STARTERS_WIF_CONFIG }}
+      FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+      REPO_DIR: ${{ github.workspace }}/.render/config
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gate
+        run: |
+          if [ -z "$WIF_CLIENT_ID" ] || [ -z "$WORKSPACE" ] || [ -z "$THORYN_ISSUER" ] || [ "$FORK" = "true" ]; then
+            echo "::notice::config staging plan skipped: set THORYN_ISSUER, THORYN_STARTERS_WORKSPACE and THORYN_STARTERS_WIF_CONFIG (docs/staging-setup.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          node-version: 24
+      # Only the sandbox section: a production trust refuses pull_request jobs, and this repository must
+      # never change a production plane. The production section is validated statically by `npm run check`.
+      - name: Render the config starter with the staging fixture
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          node render/render.mjs --template starters/config --out "$REPO_DIR" \
+            --set "workspace=$WORKSPACE" \
+            --set "sandboxEnvironment=ci-config" \
+            --set "sandboxWorkloadIdentityClientId=$WIF_CLIENT_ID" \
+            --set "productionWorkloadIdentityClientId=wi_not_used_in_ci" \
+            --set "githubEnvironment=not-used-in-ci" \
+            --set "githubOwner=${GITHUB_REPOSITORY%%/*}" \
+            --set "githubRepository=${GITHUB_REPOSITORY##*/}"
+      - name: Sign in (workload identity) and plan the sandbox section
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          .thoryn/ci/install-cli.sh
+          thoryn login --connection .thoryn/environments/sandbox/connection.json
+          thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml

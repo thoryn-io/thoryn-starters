@@ -1,0 +1,20 @@
+# SANDBOX section ({{thoryn.sandboxEnvironment}}) of the workspace configuration — planned on every pull
+# request and applied on every push to main, signed in with this sandbox's workload identity trust.
+#
+# A sandbox never sends email: it captures it in its test inbox (`thoryn env test-emails`), so there is no
+# emailProvider here. The environment itself is declared in the production section.
+#
+# To add another sandbox: declare it in ../production/provision.yaml, create a workload identity trust in
+# it, then copy this folder to .thoryn/environments/<name>/ and change the slug and the trust's clientId.
+apiVersion: thoryn.io/provision/v1
+resources:
+  # Offer every method in the sandbox so developers can try them before production does.
+  - kind: loginMethods
+    environment: "{{thoryn.sandboxEnvironment}}"
+    spec:
+      methods: ["password", "passkey", "magic_code", "magic_link"]
+
+  # - kind: loginTheme
+  #   environment: "{{thoryn.sandboxEnvironment}}"
+  #   spec:
+  #     primaryColor: "#0a7d33"

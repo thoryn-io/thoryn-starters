@@ -1,0 +1,52 @@
+{
+  "apiVersion": "thoryn.io/starter-template/v1",
+  "kind": "config",
+  "description": "The workspace's CONFIG project: configuration only, no app code. It owns the workspace-wide configuration (environments, sign-in methods, branding, email, identity providers, custom domain), one section per environment under .thoryn/environments/. Render the files below, then delete this manifest.",
+  "variables": {
+    "workspace": {
+      "description": "Slug of the Thoryn workspace this project configures.",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "example": "acme"
+    },
+    "sandboxEnvironment": {
+      "description": "Slug of the first sandbox environment (section .thoryn/environments/sandbox). The production section declares it.",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "example": "dev"
+    },
+    "productionWorkloadIdentityClientId": {
+      "description": "clientId (wi_\u2026) of the PRODUCTION workload identity trust for this repository. It pins the GitHub environment below.",
+      "pattern": "^wi_[A-Za-z0-9_-]{1,64}$",
+      "example": "wi_00000000000000000000prod"
+    },
+    "sandboxWorkloadIdentityClientId": {
+      "description": "clientId (wi_\u2026) of the workload identity trust for this repository in the sandbox environment.",
+      "pattern": "^wi_[A-Za-z0-9_-]{1,64}$",
+      "example": "wi_0000000000000000000000dev"
+    },
+    "githubEnvironment": {
+      "description": "The GitHub environment the production trust pins; the production job runs in it (add required reviewers there).",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$",
+      "example": "thoryn-production"
+    },
+    "githubOwner": {
+      "description": "GitHub user or organization that owns the repository (the trusts' pinned owner).",
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$",
+      "example": "acme"
+    },
+    "githubRepository": {
+      "description": "Repository name, without the owner (the trusts' pinned repository).",
+      "pattern": "^(?!\\.\\.?$)[A-Za-z0-9._-]{1,100}$",
+      "example": "thoryn-config"
+    }
+  },
+  "files": [
+    ".thoryn/environments/production/connection.json",
+    ".thoryn/environments/production/provision.yaml",
+    ".thoryn/environments/sandbox/connection.json",
+    ".thoryn/environments/sandbox/provision.yaml",
+    "README.md"
+  ],
+  "actionsVariables": {
+    "THORYN_ISSUER": "Platform base issuer the thoryn CLI signs in to, e.g. https://auth.stg.thoryn.org. Required until the CLI ships a built-in production issuer."
+  }
+}

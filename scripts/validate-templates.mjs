@@ -77,13 +77,45 @@ for (const starter of readdirSync(join(root, "starters")).sort()) {
     }
   }
 
-  const workflow = join(outDir, ".github/workflows/ci.yml");
+  if (manifest.kind === "config") {
+    // One section per environment: production (no `environment` in its connection) declares the
+    // environments; each sandbox section converges only its own environment's configuration.
+    const sections = join(thoryn, "environments");
+    const declared = new Set();
+    const sandboxSlugs = [];
+    for (const name of existsSync(sections) ? readdirSync(sections) : []) {
+      const conn = join(sections, name, "connection.json");
+      const prov = join(sections, name, "provision.yaml");
+      if (!existsSync(conn) || !existsSync(prov)) {
+        fail(starter, `section ${name} needs connection.json and provision.yaml`);
+        continue;
+      }
+      const env = JSON.parse(readFileSync(conn, "utf8")).auth?.environment;
+      const resources = YAML.parse(readFileSync(prov, "utf8")).resources ?? [];
+      if (name === "production") {
+        if (env) fail(starter, "the production section's connection must not name an environment");
+        for (const r of resources) if (r.kind === "environment") declared.add(r.spec?.slug);
+      } else {
+        if (!env) fail(starter, `sandbox section ${name} must name its environment in connection.json`);
+        sandboxSlugs.push(env);
+        for (const r of resources) {
+          if (r.kind === "environment") fail(starter, `sandbox section ${name} must not declare an environment (production does)`);
+          if (r.environment !== env) fail(starter, `section ${name}: ${r.kind} must live in environment ${env}`);
+        }
+      }
+    }
+    if (!existsSync(join(sections, "production"))) fail(starter, "no production section");
+    for (const slug of sandboxSlugs) if (!declared.has(slug)) fail(starter, `the production section does not declare sandbox ${slug}`);
+  }
+
+  const workflows = existsSync(join(outDir, ".github/workflows")) ? readdirSync(join(outDir, ".github/workflows")) : [];
+  const workflow = join(outDir, ".github/workflows", workflows.includes("ci.yml") ? "ci.yml" : (workflows[0] ?? "ci.yml"));
   if (!existsSync(workflow)) {
-    fail(starter, "no .github/workflows/ci.yml");
+    fail(starter, "no GitHub Actions workflow");
   } else {
     const text = readFileSync(workflow, "utf8");
     if (!/id-token:\s*write/.test(text)) fail(starter, "ci.yml never requests id-token: write");
-    if (/secrets\./.test(text)) fail(starter, "ci.yml reads a repository secret; the starters are secret-less");
+    if (/secrets\./.test(text)) fail(starter, "the workflow reads a repository secret; the starters are secret-less");
     if (manifest.kind === "application") {
       for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
         if (!text.includes(`.thoryn/ci/${step}`)) fail(starter, `ci.yml does not run .thoryn/ci/${step}`);

@@ -33,6 +33,7 @@ change in any application repository.
 | [`starters/express`](starters/express) | application | Node 22+ / Express 5 / openid-client + jose | `thoryn-io/starter-express` |
 | [`starters/spring-boot`](starters/spring-boot) | application | Java 21 / Spring Boot 4.1 / Spring Security 7.1 | `thoryn-io/starter-spring-boot` |
 | [`starters/aspnet-core`](starters/aspnet-core) | application | .NET 10 / ASP.NET Core (OpenID Connect + JWT bearer handlers) | `thoryn-io/starter-aspnet-core` |
+| [`starters/config`](starters/config) | config | `.thoryn/environments/<section>/` + a plan/apply workflow | `thoryn-io/starter-config` |
 
 Every application starter implements the same contract, so one Playwright journey (`shared/e2e`) tests them
 all:
@@ -83,6 +84,21 @@ definition; `render/render.test.mjs` pins its behaviour).
 | `githubOwner`, `githubRepository` | connection.json, README | The repository the trust pins (diagnostics only; the trust itself pins the immutable ids) | `acme`, `billing-web` |
 | `appName` | provision.yaml | Display name of the app's OAuth client; its converge key in the environment | `billing-web` |
 
+### Config template variables
+
+| Variable | Used in | Meaning | Example |
+|---|---|---|---|
+| `workspace` | both connection.json, README | Workspace slug | `acme` |
+| `sandboxEnvironment` | sandbox section, production provision.yaml, README | The first sandbox's slug (production declares it; the sandbox section configures it) | `dev` |
+| `productionWorkloadIdentityClientId` | production connection.json | The production trust's `clientId` | `wi_…prod` |
+| `sandboxWorkloadIdentityClientId` | sandbox connection.json | The sandbox trust's `clientId` | `wi_…dev` |
+| `githubEnvironment` | production connection.json, README | The GitHub environment the production trust pins; the production job runs in it | `thoryn-production` |
+| `githubOwner`, `githubRepository` | both connection.json, README | The repository the trusts pin | `acme`, `thoryn-config` |
+
+The workflow reads the production job's GitHub environment from the production `connection.json`, so the
+workflow file itself is not rendered (an unrendered placeholder there would break the template
+repository's own CI).
+
 ### What the creation flow sets up besides the files
 
 For an application project (all through product APIs, nothing seeded):
@@ -99,6 +115,22 @@ For an application project (all through product APIs, nothing seeded):
 It does **not** register the application client: the application's own CI does that on its first run
 (`thoryn provision apply`), and adopts it on later runs. It does not set the application's issuer or client
 id either; those are resolved at run time.
+
+For the config project:
+
+- the sandbox environment itself (its trust must live in it), created with the display name the production
+  section declares (`Sandbox <slug>`) so the first apply adopts it unchanged;
+- a **production** trust pinned to the repository **and** the GitHub environment `githubEnvironment`
+  (`confirmProduction`), with the production connection's scopes (`tenant:environments.read/.write`,
+  `tenant:idp.read/.write`), and `manager` on the **workspace** for its client, because creating an
+  environment needs `manager` on its parent. That is the widest grant in the model, and it is why the
+  production trust accepts only jobs in that GitHub environment and never a pull request;
+- a **sandbox** trust in the sandbox, with the sandbox connection's scopes (`tenant:environments.read`,
+  `tenant:idp.read/.write`), and `manager` on that sandbox for its client;
+- the Actions variable `THORYN_ISSUER`.
+
+GitHub creates the GitHub environment the first time the production job references it; add required
+reviewers there.
 
 ## Publishing: one template repository per starter
 
