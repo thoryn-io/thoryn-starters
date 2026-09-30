@@ -11,7 +11,8 @@
  *   GET  /api/me      the protected API: Bearer access token only (ES256, typ at+jwt, iss, aud, client_id)
  *   GET  /health      liveness
  *
- * Environment (CI exports all of it; see .thoryn/ci/provision.sh and .thoryn/app-env.mjs):
+ * Environment (CI exports all of it; see .thoryn/ci/provision.sh and .thoryn/app-env.mjs). A local run reads
+ * what is not exported from ../.env and ../.thoryn/local.env (playwright.config.ts):
  *   APP_BASE_URL                 the running app (default http://127.0.0.1:8080)
  *   OIDC_ISSUER, OIDC_CLIENT_ID  resolved at run time from the provisioning
  *   THORYN_ENVIRONMENT           the sandbox slug (its test inbox is read with the CLI)
@@ -20,6 +21,7 @@
  */
 import { test, expect, type Page } from "@playwright/test";
 import { findResetLink } from "../lib/test-inbox.mjs";
+import { updateEnvFile } from "../lib/local-env.mjs";
 
 const env = (name: string): string => {
   const v = process.env[name];
@@ -133,6 +135,8 @@ test("forgot password: the reset email is read from the sandbox test inbox, then
       await page.locator("button[type=submit]").click();
       await expect(page.getByText(/your password has been updated/i)).toBeVisible();
       currentPassword = newPassword;
+      // Locally the password came from .thoryn/local.env: keep that file true for the next run.
+      if (process.env.THORYN_LOCAL_ENV_FILE) updateEnvFile(process.env.THORYN_LOCAL_ENV_FILE, "THORYN_TEST_USER_PASSWORD", newPassword);
     });
 
     await test.step("the new password signs in to the app", async () => {

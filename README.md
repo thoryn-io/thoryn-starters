@@ -48,10 +48,23 @@ all:
   every access token's `aud`, RFC 9068 §2.2), expiry and `client_id` checked. Anything else gets `401` with a
   Bearer challenge.
 - `GET /health`: liveness.
-- One-command local run from environment variables (`OIDC_ISSUER`, `OIDC_CLIENT_ID`; `.env` is written by
-  `node .thoryn/app-env.mjs --write .env`).
-- Redirect URIs are RFC 8252 loopback URIs (`http://127.0.0.1/callback`, `http://127.0.0.1/signed-out`);
-  the platform ignores their port.
+- Works out of the box from a local machine, with no Actions variable (SSO-3445):
+  1. `thoryn login`, then `thoryn env use <sandbox>`.
+  2. `.thoryn/ci/provision.sh`. It creates a local client, generates a sandbox test user into
+     `.thoryn/local.env` (0600, gitignored, reused), and writes `.env`.
+  3. Start the app: `npm start` / `./mvnw spring-boot:run` / `dotnet run`.
+
+  The app reads `OIDC_ISSUER` and `OIDC_CLIENT_ID` from the environment or `.env`. With a loopback base URL,
+  a GET on another loopback host is redirected to the same path and query on the base URL, so
+  `http://localhost:8080` and `http://127.0.0.1:8080` both work.
+- The **sandbox** client registers two kinds of local callback, and never on production:
+  - RFC 8252 loopback URIs, `http://127.0.0.1/callback` and `http://127.0.0.1/signed-out`, whose port
+    the platform ignores;
+  - `http://localhost:8080/callback` and `http://localhost:8080/signed-out`, the default port, matched
+    exactly.
+
+  `npm run check` enforces both, and refuses a plain-http redirect URI on a production client or on a
+  non-loopback host.
 
 ## The variable contract
 
@@ -78,8 +91,11 @@ repository starts with exactly those files.
    - a fork's pull request;
    - the first push of a just-created repository when no variable is set yet. The creation flow sets them
      right after it generates the repository, and that first run can start first.
-4. **Local runs.** Export the same names. Every script, `app-env.mjs` included, reads them from the
-   environment (`app-env.mjs` also takes `--issuer`, `--workspace`, `--environment`).
+4. **Local runs** need no variable. Whatever is not exported comes from the developer's `thoryn login`
+   session, through `thoryn whoami --output json`: the workspace and platform they signed in to, and the
+   sandbox `thoryn env use` selected. `app-env.mjs --wiring` prints the resolved values;
+   `.thoryn/ci/provision.sh` uses them. An exported value wins, and `app-env.mjs` also takes `--issuer`,
+   `--workspace` and `--environment`. CI never falls back to a session.
 
 `npm run check` fails when a render placeholder appears anywhere in this repository, when a starter's
 declaration drifts from the contract below, or when a workflow reads an undeclared variable.
@@ -101,8 +117,9 @@ Connection `sandbox` has these scopes:
 - `tenant:users.read`, `tenant:users.write`;
 - `tenant:environments.read`, which reads the sandbox's test inbox.
 
-Its grant is `manager` on the sandbox. The client's display name, its converge key in the sandbox, is the
-repository's name (`THORYN_APP_NAME` overrides it). It is not an Actions variable.
+Its grant is `manager` on the sandbox. The client's display name is its converge key in the sandbox. In CI
+it is the repository's name; a local run uses `<repository>-local-<user>`, so a CI run's teardown never
+deletes a developer's client. `THORYN_APP_NAME` overrides both. It is not an Actions variable.
 
 ### Config project
 

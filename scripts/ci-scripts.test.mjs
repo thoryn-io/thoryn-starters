@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,4 +131,75 @@ test("provision.sh stops before signing in when a variable is missing, outside A
   assert.equal(res.status, 1);
   assert.match(res.stderr, /error: THORYN_ENVIRONMENT is not set\..*export THORYN_ENVIRONMENT/);
   assert.throws(() => r.args(), /ENOENT/);
+});
+
+/** A repository with app-env.mjs too, and a `thoryn` that answers `whoami` like a signed-in session. */
+function localRepo(whoami) {
+  const r = repo("express");
+  cpSync(join(root, "shared/thoryn/app-env.mjs"), join(r.dir, ".thoryn/app-env.mjs"));
+  const log = join(r.dir, "thoryn.log");
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash
+if [ "$1" = "whoami" ]; then printf '%s' '${JSON.stringify(whoami)}'; exit 0; fi
+echo "$* | ws=$THORYN_WORKSPACE env=$THORYN_ENVIRONMENT app=$THORYN_APP_NAME" >> "${log}"
+`);
+  chmodSync(join(r.bin, "thoryn"), 0o755);
+  return { ...r, calls: () => readFileSync(log, "utf8").trim().split("\n") };
+}
+
+test("provision.sh runs locally from the thoryn login session: no Actions variable, its own local client", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  const res = run(r, "provision.sh", [], { USER: "dana", THORYN_TEST_USER_EMAIL: "dana+test@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.match(res.stdout, /Local run: workspace acme, sandbox dev/);
+  assert.doesNotMatch(res.stdout, /::add-mask::/);
+  const calls = r.calls();
+  const app = `${r.dir.split("/").pop()}-local-dana`;
+  assert.deepEqual(calls, [
+    `provision plan --file .thoryn/provision.yaml | ws=acme env=dev app=${app}`,
+    `provision apply --file .thoryn/provision.yaml --yes | ws=acme env=dev app=${app}`,
+  ]);
+  assert.ok(!calls.some((c) => c.startsWith("login")), "a local run uses your own session, never workload identity");
+});
+
+test("provision.sh locally: an exported value wins over the session, and a missing sandbox is named", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  run(r, "provision.sh", [], { THORYN_ENVIRONMENT: "qa", THORYN_TEST_USER_EMAIL: "a@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.match(r.calls()[0], /env=qa/);
+
+  const noEnv = localRepo({ issuer: "https://acme.auth.stg.thoryn.org" });
+  const res = run(noEnv, "provision.sh", [], { THORYN_TEST_USER_EMAIL: "a@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /THORYN_ENVIRONMENT is not set.*thoryn env use <sandbox>/);
+});
+
+test("provision.sh refuses production: an application project provisions into a sandbox only", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  const res = run(r, "provision.sh", [], { THORYN_ENVIRONMENT: "production" });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /provisions into a sandbox only/);
+  assert.equal(existsSync(join(r.dir, ".thoryn/local.env")), false, "no test user is generated for production");
+  assert.throws(() => r.calls(), /ENOENT/);
+});
+
+test("provision.sh locally generates the test user once into .thoryn/local.env (0600), never prints the password, and reuses it", () => {
+  const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
+  const first = run(r, "provision.sh", [], { USER: "Dana" });
+  const file = join(r.dir, ".thoryn/local.env");
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const saved = Object.fromEntries(readFileSync(file, "utf8").split("\n").filter((l) => l.includes("=") && !l.startsWith("#")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  assert.match(saved.THORYN_TEST_USER_EMAIL, /^dev-dana-[0-9a-f]{6}@example\.com$/);
+  // Upper, lower, digit and a symbol, 36 characters: the sandbox password policy.
+  assert.match(saved.THORYN_TEST_USER_PASSWORD, /^Pw1![0-9a-f]{32}$/);
+  assert.ok(first.stdout.includes(`Test user: ${saved.THORYN_TEST_USER_EMAIL} (its password is in .thoryn/local.env)`), first.stdout);
+  assert.ok(!(first.stdout + first.stderr).includes(saved.THORYN_TEST_USER_PASSWORD.slice(4)), "the password is never printed");
+
+  // A re-run reuses the file unchanged.
+  const before = readFileSync(file, "utf8");
+  const again = run(r, "provision.sh", [], { USER: "Dana" });
+  assert.equal(readFileSync(file, "utf8"), before);
+  assert.ok(again.stdout.includes(`Test user: ${saved.THORYN_TEST_USER_EMAIL}`));
+
+  // An exported value wins over the file (and the file is left as it is).
+  const exported = run(r, "provision.sh", [], { THORYN_TEST_USER_EMAIL: "mine@example.com" });
+  assert.ok(exported.stdout.includes("Test user: mine@example.com"));
+  assert.equal(readFileSync(file, "utf8"), before);
 });

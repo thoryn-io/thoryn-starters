@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AppEnvError, clientIdFromReceipt, composeIssuer, resolveAppEnv, toDotenv } from "./app-env.mjs";
+import { AppEnvError, clientIdFromReceipt, composeIssuer, resolveAppEnv, resolveWiring, toDotenv, wiringFromWhoami } from "./app-env.mjs";
 
 test("composeIssuer puts the workspace in front of the platform host and the sandbox in the path", () => {
   assert.equal(composeIssuer("https://auth.stg.thoryn.org", "acme", "dev"), "https://acme.auth.stg.thoryn.org/dev");
@@ -55,4 +55,34 @@ test("resolveAppEnv names THORYN_WORKSPACE / THORYN_ENVIRONMENT when they are mi
   await assert.rejects(resolveAppEnv({ ...base, workspace: "acme" }), /set THORYN_ENVIRONMENT/);
   await assert.rejects(resolveAppEnv({ ...base, workspace: "Acme/x", environment: "dev" }), /THORYN_WORKSPACE .* is not a workspace slug/);
   await assert.rejects(resolveAppEnv({ ...base, workspace: "acme", environment: "../prod" }), /THORYN_ENVIRONMENT .* is not an environment slug/);
+});
+
+test("wiringFromWhoami reads the workspace and platform issuer off the workspace issuer, and the selected sandbox", () => {
+  assert.deepEqual(wiringFromWhoami({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" }), {
+    THORYN_WORKSPACE: "acme",
+    THORYN_ISSUER: "https://auth.stg.thoryn.org",
+    THORYN_ENVIRONMENT: "dev",
+  });
+  // `thoryn workspace switch` wins for the workspace; production is never a sandbox to run against.
+  assert.deepEqual(wiringFromWhoami({ issuer: "https://acme.auth.stg.thoryn.org", activeWorkspace: "beta", activeEnvironment: "production" }), {
+    THORYN_WORKSPACE: "beta",
+    THORYN_ISSUER: "https://auth.stg.thoryn.org",
+  });
+  // A platform issuer (no workspace label) or no session yields nothing it cannot vouch for.
+  assert.deepEqual(wiringFromWhoami({ issuer: "https://auth.stg" }), {});
+  assert.deepEqual(wiringFromWhoami(null), {});
+});
+
+test("resolveWiring keeps given values and asks the session only for what is missing", () => {
+  let asked = 0;
+  const whoami = () => { asked++; return { issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" }; };
+  assert.deepEqual(resolveWiring({ issuer: "https://auth.example", workspace: "w", environment: "e" }, whoami), {
+    THORYN_ISSUER: "https://auth.example", THORYN_WORKSPACE: "w", THORYN_ENVIRONMENT: "e",
+  });
+  assert.equal(asked, 0);
+  assert.deepEqual(resolveWiring({ environment: "sbx" }, whoami), {
+    THORYN_ISSUER: "https://auth.stg.thoryn.org", THORYN_WORKSPACE: "acme", THORYN_ENVIRONMENT: "sbx",
+  });
+  assert.equal(asked, 1);
+  assert.deepEqual(resolveWiring({}, () => null), { THORYN_ISSUER: undefined, THORYN_WORKSPACE: undefined, THORYN_ENVIRONMENT: undefined });
 });

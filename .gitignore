@@ -8,3 +8,4 @@ target/
 bin/
 obj/
 .DS_Store
+local.env
