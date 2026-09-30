@@ -1,0 +1,63 @@
+# PRODUCTION section of the workspace configuration — `thoryn provision apply` converges it on every push to
+# main, signed in with the production workload identity trust (connection `production` in
+# .thoryn/template.json; its clientId is the THORYN_PRODUCTION_WIF_CLIENT_ID variable of the production
+# GitHub environment).
+#
+# The config project owns everything workspace-wide: the environments themselves, and per environment the
+# sign-in methods, flows, branding, email provider, identity providers and (soon) the custom domain.
+# Application projects own only their own OAuth clients and test users; never declare those here.
+#
+# Resources without `environment:` live on the production plane. No secrets in this file: name the
+# environment variable that carries one (`smtpPasswordEnv`, `clientSecretEnv`) and pass it from a GitHub
+# secret in .github/workflows/thoryn.yml. `{{env.NAME}}` is filled in by the `thoryn` CLI from the
+# environment when it reads the file; the workflow maps the Actions variables into it.
+apiVersion: thoryn.io/provision/v1
+resources:
+  # Every sandbox of the workspace. Each one also has its own section under .thoryn/environments/.
+  - kind: environment
+    name: sandbox
+    spec:
+      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
+      displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"
+
+  # How people sign in on production.
+  - kind: loginMethods
+    spec:
+      methods: ["password", "passkey"]
+
+  # ── Add more as you need them (and add the matching scopes to .thoryn/template.json and the trust) ──
+  #
+  # Branding of the hosted sign-in pages (scope tenant:idp.write):
+  # - kind: loginTheme
+  #   spec:
+  #     logoUrl: "https://www.example.com/logo.svg"
+  #     primaryColor: "#3d5afe"
+  #
+  # Your own SMTP server for production email (scopes tenant:email.read / tenant:email.write). The password
+  # comes from the SMTP_PASSWORD environment variable; pass it from a GitHub secret.
+  # - kind: emailProvider
+  #   spec:
+  #     smtpHost: "smtp.example.com"
+  #     smtpPort: 587
+  #     smtpUsername: "thoryn"
+  #     smtpPasswordEnv: SMTP_PASSWORD
+  #     transportSecurity: "STARTTLS"
+  #     fromAddress: "no-reply@example.com"
+  #     fromName: "Example"
+  #
+  # A customer identity provider (scopes tenant:federation.read / tenant:federation.write):
+  # - kind: federationMember
+  #   name: corporate-idp
+  #   spec:
+  #     providerType: oidc
+  #     displayName: "Corporate sign-in"
+  #     discoveryUrl: "https://login.example.com/.well-known/openid-configuration"
+  #     clientId: "thoryn"
+  #     clientSecretEnv: CORPORATE_IDP_CLIENT_SECRET
+  #
+  # Sign-in on your own domain — the `customDomain` kind is coming to the CLI (SSO-3413). Until then use
+  # `thoryn domain` once, by hand. Applications need no change when it becomes active: they resolve their
+  # issuer at run time.
+  # - kind: customDomain
+  #   spec:
+  #     hostname: "auth.example.com"

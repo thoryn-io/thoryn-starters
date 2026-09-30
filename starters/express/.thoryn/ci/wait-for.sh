@@ -3,7 +3,7 @@
 set -uo pipefail
 url="$1"; timeout="${2:-120}"
 for _ in $(seq "$timeout"); do
-  if curl -fsS -o /dev/null "$url"; then echo "$url is up"; exit 0; fi
+  if curl -fs -o /dev/null "$url"; then echo "$url is up"; exit 0; fi
   sleep 1
 done
 echo "::error::$url did not come up within ${timeout}s"

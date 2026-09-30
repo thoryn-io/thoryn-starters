@@ -1,99 +1,228 @@
 #!/usr/bin/env node
-// Render every starter with its manifest's EXAMPLE values and check the result is what the thoryn CLI and
-// the render contract expect. A template that fails here is never published.
+// SSO-3428 — check every starter is what a generated repository needs, AS IS: nothing is rendered, so the
+// files this repository publishes are exactly the files a customer's repository starts with. A template
+// that fails here is never published.
 //
-//  - the manifest is valid and every listed file renders; no placeholder is left anywhere;
-//  - every rendered connection file validates against the CLI's connection schema, uses workload identity
-//    and names no secret;
-//  - every rendered provisioning file validates against the CLI's provisioning schema;
-//  - an APPLICATION project declares only application and user resources (no environment, no workspace
-//    configuration), each inside the environment its connection names;
-//  - the starter's own pipeline requests `id-token: write` and runs the shared CI steps.
+//  - no render placeholder is left anywhere in this repository (the starters are not rendered any more);
+//  - `.thoryn/template.json` validates against schemas/template.schema.json, and declares EXACTLY the
+//    Actions variables of its kind (the fixed contract the starter orchestrator sets), at the right level;
+//  - every connection's variables are declared, its provisioning file exists and validates against the
+//    CLI's provisioning schema, and every `{{env.NAME}}` in it is a declared variable or a run-time value;
+//  - an APPLICATION project declares only application and user resources, all in the sandbox its
+//    connection names; a CONFIG project's production section declares every sandbox, and each sandbox
+//    section converges only its own sandbox;
+//  - the workflows read only declared variables (plus THORYN_CLI_VERSION), read every one of them, request
+//    `id-token: write`, read no secret, and run the shared CI steps.
 
-import { mkdtempSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import YAML from "yaml";
-import { exampleValues, readManifest, renderTemplate } from "../render/render.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-const validateConnection = ajv.compile(JSON.parse(readFileSync(join(root, "schemas/connection.schema.json"), "utf8")));
-const validateProvision = ajv.compile(JSON.parse(readFileSync(join(root, "schemas/provision.schema.json"), "utf8")));
 
+/** The render placeholder token, built so this file does not contain it. */
+export const PLACEHOLDER_TOKEN = "{{" + "thoryn.";
+const PLACEHOLDER = new RegExp("\\{\\{\\s*" + "thoryn\\.");
+const SKIP_DIRS = new Set(["node_modules", ".git", "target", "bin", "obj", "test-results", "playwright-report"]);
+
+/**
+ * The variable contract, per template kind. FIXED: the starter orchestrator (oathy) sets exactly these.
+ * `environment` level means a variable of the production GitHub environment (github.productionEnvironment).
+ */
+export const VARIABLE_CONTRACT = {
+  application: {
+    THORYN_ISSUER: "repository",
+    THORYN_WORKSPACE: "repository",
+    THORYN_ENVIRONMENT: "repository",
+    THORYN_WIF_CLIENT_ID: "repository",
+  },
+  config: {
+    THORYN_ISSUER: "repository",
+    THORYN_WORKSPACE: "repository",
+    THORYN_SANDBOX_ENVIRONMENT: "repository",
+    THORYN_SANDBOX_WIF_CLIENT_ID: "repository",
+    THORYN_PRODUCTION_WIF_CLIENT_ID: "environment",
+  },
+};
+
+/** `{{env.NAME}}` values a provisioning file may read that are not Actions variables (set per run). */
+const RUNTIME_ENV = new Set(["THORYN_APP_NAME", "THORYN_TEST_USER_EMAIL", "THORYN_TEST_USER_PASSWORD"]);
+/** Optional variables a workflow may read without declaring them. */
+const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION"]);
 const APP_KINDS = new Set(["application", "user"]);
-const problems = [];
-const fail = (starter, msg) => problems.push(`${starter}: ${msg}`);
+const ENV_REF = /\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
-function walk(dir, pred, out = []) {
+function walk(dir, visit) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) walk(p, pred, out);
-    else if (pred(name)) out.push(p);
+    if (statSync(p).isDirectory()) {
+      if (!SKIP_DIRS.has(name)) walk(p, visit);
+    } else {
+      visit(p);
+    }
   }
-  return out;
 }
 
-for (const starter of readdirSync(join(root, "starters")).sort()) {
-  const templateDir = join(root, "starters", starter);
+/** Every file under [dir] that still carries a render placeholder (relative paths). */
+export function findPlaceholders(dir, skip = new Set()) {
+  const hits = [];
+  walk(dir, (p) => {
+    if (skip.has(p)) return;
+    if (PLACEHOLDER.test(readFileSync(p).toString("utf8"))) hits.push(relative(dir, p));
+  });
+  return hits;
+}
+
+const envRef = (name) => new RegExp(`^\\{\\{\\s*env\\.${name}\\s*\\}\\}$`);
+
+/**
+ * Check one starter directory. Returns a list of problems (empty ⇒ valid). [schemas] holds the compiled
+ * `template` and `provision` validators.
+ */
+export function checkStarter(dir, schemas) {
+  const problems = [];
+  const fail = (msg) => problems.push(msg);
+  const manifestPath = join(dir, ".thoryn/template.json");
+  if (!existsSync(manifestPath)) return [".thoryn/template.json is missing"];
   let manifest;
-  let outDir;
   try {
-    manifest = readManifest(templateDir);
-    outDir = join(mkdtempSync(join(tmpdir(), `starter-${starter}-`)), "repo");
-    renderTemplate({ templateDir, outDir, values: exampleValues(manifest) });
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   } catch (e) {
-    fail(starter, e.message);
-    continue;
+    return [`.thoryn/template.json is not JSON: ${e.message}`];
+  }
+  if (!schemas.template(manifest)) return [`.thoryn/template.json: ${schemas.ajv.errorsText(schemas.template.errors)}`];
+
+  // The fixed variable contract.
+  const contract = VARIABLE_CONTRACT[manifest.kind];
+  const declared = manifest.variables;
+  const productionEnv = manifest.github?.productionEnvironment;
+  for (const [name, level] of Object.entries(contract)) {
+    if (!declared[name]) fail(`template.json does not declare ${name} (the ${manifest.kind} contract)`);
+    else if (declared[name].level !== level) fail(`template.json: ${name} must be a ${level}-level variable`);
+    else if (level === "environment" && declared[name].environment !== productionEnv) {
+      fail(`template.json: ${name} must live in the production GitHub environment "${productionEnv}"`);
+    }
+  }
+  for (const name of Object.keys(declared)) {
+    if (!(name in contract)) fail(`template.json declares ${name}, which is not in the ${manifest.kind} contract`);
   }
 
-  const thoryn = join(outDir, ".thoryn");
-  const connections = walk(thoryn, (n) => /^connection.*\.json$/.test(n));
-  const provisions = walk(thoryn, (n) => /^provision.*\.ya?ml$/.test(n));
-  if (connections.length === 0) fail(starter, "no .thoryn connection file");
-  if (provisions.length === 0) fail(starter, "no .thoryn provisioning file");
-
-  const connectionEnvs = new Set();
-  for (const file of connections) {
-    const rel = relative(outDir, file);
-    const json = JSON.parse(readFileSync(file, "utf8"));
-    if (!validateConnection(json)) fail(starter, `${rel}: ${ajv.errorsText(validateConnection.errors)}`);
-    if (json.auth?.method !== "workload_identity") fail(starter, `${rel}: auth.method must be workload_identity`);
-    if ("secretEnv" in (json.auth ?? {})) fail(starter, `${rel}: names a secret`);
-    if (json.auth?.environment) connectionEnvs.add(json.auth.environment);
-  }
-
-  for (const file of provisions) {
-    const rel = relative(outDir, file);
-    const doc = YAML.parse(readFileSync(file, "utf8"));
-    if (!validateProvision(doc)) fail(starter, `${rel}: ${ajv.errorsText(validateProvision.errors)}`);
+  // Connections: declared variables, and their provisioning files.
+  const connections = Object.entries(manifest.connections);
+  const production = connections.filter(([, c]) => c.production);
+  if (manifest.kind === "application" && production.length) fail("an application project has no production connection");
+  if (manifest.kind === "config" && production.length !== 1) fail("a config project has exactly one production connection");
+  const usedVariables = new Set(["THORYN_ISSUER", "THORYN_WORKSPACE"]);
+  const sandboxVars = [];
+  for (const [name, c] of connections) {
+    for (const v of [c.clientIdVariable, c.environmentVariable].filter(Boolean)) {
+      usedVariables.add(v);
+      if (!declared[v]) fail(`connection ${name}: ${v} is not a declared variable`);
+    }
+    if (c.production) {
+      if (declared[c.clientIdVariable]?.level !== "environment") fail(`connection ${name}: the production client id must be an environment-level variable`);
+    } else {
+      sandboxVars.push(c.environmentVariable);
+      if (declared[c.clientIdVariable]?.level !== "repository") fail(`connection ${name}: a sandbox client id is a repository variable`);
+    }
+    if (manifest.kind === "config" && c.provisionFile !== `.thoryn/environments/${name}/provision.yaml`) {
+      fail(`connection ${name}: a config section lives at .thoryn/environments/${name}/provision.yaml`);
+    }
+    const file = join(dir, c.provisionFile);
+    if (!existsSync(file)) {
+      fail(`connection ${name}: ${c.provisionFile} does not exist`);
+      continue;
+    }
+    const text = readFileSync(file, "utf8");
+    const doc = YAML.parse(text);
+    if (!schemas.provision(doc)) fail(`${c.provisionFile}: ${schemas.ajv.errorsText(schemas.provision.errors)}`);
+    // Only values: a comment may mention the grammar.
+    for (const m of JSON.stringify(doc ?? null).matchAll(ENV_REF)) {
+      if (!declared[m[1]] && !RUNTIME_ENV.has(m[1])) fail(`${c.provisionFile}: {{env.${m[1]}}} is neither a declared variable nor a run-time value`);
+    }
+    const resources = doc?.resources ?? [];
+    if (!c.production) {
+      for (const r of resources) {
+        if (r.kind === "environment") fail(`${c.provisionFile}: a sandbox connection must not declare an environment (production does)`);
+        else if (!envRef(c.environmentVariable).test(r.environment ?? "")) {
+          fail(`${c.provisionFile}: ${r.kind}/${r.name ?? r.kind} must live in {{env.${c.environmentVariable}}}, the sandbox its connection names`);
+        }
+      }
+    } else {
+      for (const r of resources) if (r.environment) fail(`${c.provisionFile}: the production section converges the production plane; ${r.kind} names an environment`);
+    }
     if (manifest.kind === "application") {
-      for (const r of doc.resources ?? []) {
-        if (!APP_KINDS.has(r.kind)) fail(starter, `${rel}: an application project must not declare a '${r.kind}' (that belongs to the workspace config project)`);
-        if (!connectionEnvs.has(r.environment)) fail(starter, `${rel}: ${r.kind}/${r.name} must live in the environment connection.json names`);
+      for (const r of resources) {
+        if (!APP_KINDS.has(r.kind)) fail(`${c.provisionFile}: an application project must not declare a '${r.kind}' (that belongs to the workspace config project)`);
       }
     }
   }
+  if (manifest.kind === "config") {
+    const prod = production[0]?.[1];
+    const doc = prod && existsSync(join(dir, prod.provisionFile)) ? YAML.parse(readFileSync(join(dir, prod.provisionFile), "utf8")) : null;
+    const slugs = (doc?.resources ?? []).filter((r) => r.kind === "environment").map((r) => r.spec?.slug ?? "");
+    for (const v of sandboxVars) {
+      if (!slugs.some((s) => envRef(v).test(s))) fail(`the production section does not declare the sandbox {{env.${v}}}`);
+    }
+    const sections = existsSync(join(dir, ".thoryn/environments")) ? readdirSync(join(dir, ".thoryn/environments")) : [];
+    for (const s of sections) if (!manifest.connections[s]) fail(`section .thoryn/environments/${s} has no connection in template.json`);
+  }
+  for (const name of Object.keys(declared)) if (!usedVariables.has(name)) fail(`template.json declares ${name}, but no connection uses it`);
 
-  const workflow = join(outDir, ".github/workflows/ci.yml");
-  if (!existsSync(workflow)) {
-    fail(starter, "no .github/workflows/ci.yml");
-  } else {
-    const text = readFileSync(workflow, "utf8");
-    if (!/id-token:\s*write/.test(text)) fail(starter, "ci.yml never requests id-token: write");
-    if (/secrets\./.test(text)) fail(starter, "ci.yml reads a repository secret; the starters are secret-less");
-    if (manifest.kind === "application") {
-      for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
-        if (!text.includes(`.thoryn/ci/${step}`)) fail(starter, `ci.yml does not run .thoryn/ci/${step}`);
-      }
+  // Workflows.
+  const wfDir = join(dir, ".github/workflows");
+  const workflows = existsSync(wfDir) ? readdirSync(wfDir).filter((f) => /\.ya?ml$/.test(f)) : [];
+  if (!workflows.length) fail("no GitHub Actions workflow");
+  const read = new Set();
+  let text = "";
+  for (const wf of workflows) {
+    const t = readFileSync(join(wfDir, wf), "utf8");
+    text += t;
+    for (const m of t.matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      read.add(m[1]);
+      if (!declared[m[1]] && !OPTIONAL_VARS.has(m[1])) fail(`${wf} reads vars.${m[1]}, which template.json does not declare`);
+    }
+    if (/secrets\./.test(t)) fail(`${wf} reads a repository secret; the starters are secret-less`);
+  }
+  for (const name of Object.keys(declared)) if (!read.has(name)) fail(`no workflow reads vars.${name}`);
+  if (workflows.length && !/id-token:\s*write/.test(text)) fail("the workflow never requests id-token: write");
+  if (workflows.length && !text.includes(".thoryn/ci/gate.sh")) fail("the workflow does not gate on .thoryn/ci/gate.sh");
+  for (const [name] of connections) {
+    if (workflows.length && !text.includes(`.thoryn/ci/login.sh ${name}`) && manifest.kind === "config") fail(`the workflow never signs in as connection ${name}`);
+  }
+  if (manifest.kind === "application") {
+    for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
+      if (!text.includes(`.thoryn/ci/${step}`)) fail(`the workflow does not run .thoryn/ci/${step}`);
     }
   }
-  if (!problems.some((p) => p.startsWith(`${starter}:`))) console.log(`✔ ${starter} renders and validates (${manifest.kind})`);
+  if (existsSync(join(dir, ".thoryn/connection.json"))) fail(".thoryn/connection.json is gone: sign-in is declared by template.json connections");
+  return problems;
 }
 
-if (problems.length) {
-  console.error(`\n✖ ${problems.length} problem(s):\n  ${problems.join("\n  ")}`);
-  process.exit(1);
+export function compileSchemas() {
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  const load = (f) => JSON.parse(readFileSync(join(root, "schemas", f), "utf8"));
+  return { ajv, template: ajv.compile(load("template.schema.json")), provision: ajv.compile(load("provision.schema.json")) };
 }
+
+function main() {
+  const problems = [];
+  const self = fileURLToPath(import.meta.url);
+  for (const hit of findPlaceholders(root, new Set([self]))) {
+    problems.push(`${hit}: contains a render placeholder (${PLACEHOLDER_TOKEN}…); starters are not rendered — read the value from a THORYN_* variable at run time`);
+  }
+  const schemas = compileSchemas();
+  for (const starter of readdirSync(join(root, "starters")).sort()) {
+    const found = checkStarter(join(root, "starters", starter), schemas);
+    for (const p of found) problems.push(`${starter}: ${p}`);
+    if (!found.length) console.log(`✔ ${starter} validates as is (${JSON.parse(readFileSync(join(root, "starters", starter, ".thoryn/template.json"), "utf8")).kind})`);
+  }
+  if (problems.length) {
+    console.error(`\n✖ ${problems.length} problem(s):\n  ${problems.join("\n  ")}`);
+    process.exit(1);
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main();

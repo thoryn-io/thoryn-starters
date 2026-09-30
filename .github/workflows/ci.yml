@@ -1,6 +1,8 @@
-# thoryn-starters CI: every starter is built, unit-tested, rendered through the render contract and — once
-# the staging workload identity trusts exist — run end to end against staging. A published template can
-# therefore never be broken (publish.yml only runs after this workflow is green on main).
+# thoryn-starters CI: every starter is built, unit-tested, validated as is against the variable contract and
+# — once the staging workload identity trusts exist — run end to end against staging, with the fixture
+# supplied the way a generated repository gets it (THORYN_* Actions variables mapped into the job's
+# environment). A published template can therefore never be broken (publish.yml only runs after this
+# workflow is green on main).
 name: CI
 
 on:
@@ -14,7 +16,7 @@ permissions:
 
 jobs:
   tooling:
-    name: Render contract, shared files, workflow lint
+    name: Variable contract, shared files, workflow lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,9 +25,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Renderer, app-env and test-inbox unit tests
+      - name: CI-script, validator, app-env and test-inbox unit tests
         run: npm test
-      - name: Shared files in sync; every starter renders and validates against the CLI schemas
+      - name: Shared files in sync; every starter validates as is (no placeholder, variable contract, CLI schema)
         run: npm run check
       - name: actionlint (this repository's and every starter's workflows)
         run: |
@@ -62,3 +64,97 @@ jobs:
     with:
       stack: express
       wif-client-id: ${{ vars.THORYN_STARTERS_WIF_EXPRESS }}
+
+  spring-boot:
+    name: spring-boot — build and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starters/spring-boot
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: starters/spring-boot/pom.xml
+      - run: ./mvnw -B verify
+
+  spring-boot-e2e:
+    name: spring-boot — staging e2e
+    needs: [tooling, spring-boot]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stack-e2e.yml
+    with:
+      stack: spring-boot
+      wif-client-id: ${{ vars.THORYN_STARTERS_WIF_SPRING_BOOT }}
+
+  aspnet-core:
+    name: aspnet-core — build and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starters/aspnet-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: starters/aspnet-core/global.json
+      - run: dotnet test --solution ThorynStarter.slnx
+
+  aspnet-core-e2e:
+    name: aspnet-core — staging e2e
+    needs: [tooling, aspnet-core]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stack-e2e.yml
+    with:
+      stack: aspnet-core
+      wif-client-id: ${{ vars.THORYN_STARTERS_WIF_ASPNET_CORE }}
+
+  config-plan:
+    name: config — staging plan (sandbox section)
+    needs: tooling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: starters/config
+    # The config starter's own variables, supplied from this repository's staging fixture exactly as a
+    # generated config repository's workflow maps its Actions variables.
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
+      THORYN_SANDBOX_ENVIRONMENT: ci-config
+      THORYN_SANDBOX_WIF_CLIENT_ID: ${{ vars.THORYN_STARTERS_WIF_CONFIG }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gate
+        run: |
+          if [ -z "$THORYN_SANDBOX_WIF_CLIENT_ID" ] || [ -z "$THORYN_WORKSPACE" ] || [ -z "$THORYN_ISSUER" ] || [ "$FORK" = "true" ]; then
+            echo "::notice::config staging plan skipped: set THORYN_ISSUER, THORYN_STARTERS_WORKSPACE and THORYN_STARTERS_WIF_CONFIG (docs/staging-setup.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Only the sandbox section: a production trust refuses pull_request jobs, and this repository must
+      # never change a production plane. The production section is validated statically by `npm run check`.
+      # Separate steps: install-cli.sh puts the CLI on PATH for the NEXT steps ($GITHUB_PATH).
+      - name: Install the thoryn CLI
+        if: steps.gate.outputs.ready == 'true'
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
+        if: steps.gate.outputs.ready == 'true'
+        run: .thoryn/ci/login.sh sandbox
+      - name: Plan the sandbox section
+        if: steps.gate.outputs.ready == 'true'
+        run: thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml

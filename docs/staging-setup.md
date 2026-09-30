@@ -1,22 +1,41 @@
 # Staging setup for this repository's end-to-end CI
 
-The staging e2e job (`.github/workflows/stack-e2e.yml`) renders each application starter with a staging
-fixture and runs it exactly as a generated repository would: workload identity sign-in, `thoryn provision
-apply`, the Playwright sign-in journey, teardown. It skips with a notice until the variables below exist.
+The staging e2e job (`.github/workflows/stack-e2e.yml`) runs each application starter in place, exactly as
+a generated repository would: workload identity sign-in, `thoryn provision apply`, the Playwright sign-in
+journey, teardown. Nothing is rendered. The job maps this repository's fixture variables into the same
+`THORYN_*` environment a generated repository's workflow maps from its own Actions variables:
+
+| Starter reads | Supplied from |
+|---|---|
+| `THORYN_ISSUER` | `vars.THORYN_ISSUER` |
+| `THORYN_WORKSPACE` | `vars.THORYN_STARTERS_WORKSPACE` |
+| `THORYN_ENVIRONMENT` | `ci-<stack>` |
+| `THORYN_WIF_CLIENT_ID` | `vars.THORYN_STARTERS_WIF_<STACK>` |
+
+The config starter's sandbox plan (`config-plan` in `ci.yml`) works the same way:
+
+- `THORYN_SANDBOX_ENVIRONMENT` is `ci-config`;
+- `THORYN_SANDBOX_WIF_CLIENT_ID` is `vars.THORYN_STARTERS_WIF_CONFIG`.
+
+Both skip with a notice until the variables below exist.
 
 ## The fixture
 
 - One workspace for this repository's CI (below: `starters`).
 - One sandbox per application starter, `ci-<starter>`: `ci-express`, `ci-spring-boot`, `ci-aspnet-core`.
   Separate sandboxes let the stacks run in parallel without converging the same resources.
+- A sandbox `ci-config` for the config starter, whose sandbox section CI only plans.
 - In each sandbox, a workload identity trust pinned to `thoryn-io/thoryn-starters`, with exactly the scopes
-  an application project's `.thoryn/connection.json` requests, and `manager` on that sandbox for the
+  of the starter's `sandbox` connection in `.thoryn/template.json`, and `manager` on that sandbox for the
   trust's client.
 
 ## One-time setup (product owner)
 
-Needs oauthy #3787 (workload identity trusts, hub V191/V192) on staging and a `thoryn` CLI release that
-carries SSO-3308 (thoryn-cli #94).
+Needs:
+
+- oauthy #3787 (workload identity trusts, hub V191/V192) on staging;
+- a `thoryn` CLI release that carries SSO-3308 (thoryn-cli #94, workload identity sign-in);
+- a `thoryn` CLI release that carries SSO-3430 (`{{env.NAME}}` in a resource's `environment`).
 
 ```bash
 export THORYN_ISSUER=https://auth.stg.thoryn.org
@@ -47,8 +66,16 @@ gh variable set THORYN_STARTERS_WORKSPACE -R thoryn-io/thoryn-starters --body st
 gh variable set THORYN_STARTERS_WIF_EXPRESS     -R thoryn-io/thoryn-starters --body '<wi_express>'
 gh variable set THORYN_STARTERS_WIF_SPRING_BOOT -R thoryn-io/thoryn-starters --body '<wi_spring_boot>'
 gh variable set THORYN_STARTERS_WIF_ASPNET_CORE -R thoryn-io/thoryn-starters --body '<wi_aspnet_core>'
+
+# The config starter: CI only PLANS its sandbox section (read-only); it never touches a production plane.
+thoryn env create ci-config --name "Sandbox ci-config"
+thoryn workload-identity trusts create --environment ci-config --name thoryn-starters-config \
+  --repository thoryn-io/thoryn-starters --github-hosted-runners-only \
+  --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write
+thoryn access grant client:<wi_config> manager environment:<ci-config id>
+gh variable set THORYN_STARTERS_WIF_CONFIG -R thoryn-io/thoryn-starters --body '<wi_config>'
 # Optional: pin the CLI release the jobs install (default: the latest cli-v* release).
-gh variable set THORYN_CLI_VERSION -R thoryn-io/thoryn-starters --body 'cli-v<a release with SSO-3308>'
+gh variable set THORYN_CLI_VERSION -R thoryn-io/thoryn-starters --body 'cli-v<a release with SSO-3308 and SSO-3430>'
 ```
 
 Nothing here is a secret: client ids, the issuer and the workspace slug are public. The jobs hold no

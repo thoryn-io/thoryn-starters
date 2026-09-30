@@ -7,5 +7,4 @@ playwright-report/
 target/
 bin/
 obj/
-/.render/
 .DS_Store

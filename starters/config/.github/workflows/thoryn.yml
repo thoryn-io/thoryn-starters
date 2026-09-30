@@ -1,0 +1,111 @@
+# Converge the workspace configuration, one environment section at a time, with no stored secret.
+#
+#   pull request → `thoryn provision plan` for the sandbox section (read-only)
+#   push to main → production: plan + apply, in the GitHub environment its trust pins
+#                  then the sandbox: plan + apply
+#
+# Each section signs in with its own workload identity trust (the `connections` of .thoryn/template.json).
+# Production trusts refuse pull_request jobs, so production is never touched from a pull request; protect
+# its GitHub environment with required reviewers to approve every production change.
+#
+# Nothing in this repository names the workspace: every value comes from GitHub Actions variables.
+#   Repository variables: THORYN_ISSUER, THORYN_WORKSPACE, THORYN_SANDBOX_ENVIRONMENT, THORYN_SANDBOX_WIF_CLIENT_ID
+#   Variable of the production GitHub environment: THORYN_PRODUCTION_WIF_CLIENT_ID
+# The production GitHub environment's name is github.productionEnvironment in .thoryn/template.json.
+name: Thoryn configuration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thoryn-configuration
+  cancel-in-progress: false
+
+jobs:
+  sections:
+    name: Thoryn configured?
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+      production-github-environment: ${{ steps.production.outputs.github-environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: production
+        run: echo "github-environment=$(jq -r '.github.productionEnvironment' .thoryn/template.json)" >> "$GITHUB_OUTPUT"
+      - id: gate
+        env:
+          IS_TEMPLATE: ${{ github.event.repository.is_template == true }}
+          FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+          FIRST_PUSH: ${{ github.event_name == 'push' && github.run_number == 1 }}
+          THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+          THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+          THORYN_SANDBOX_ENVIRONMENT: ${{ vars.THORYN_SANDBOX_ENVIRONMENT }}
+          THORYN_SANDBOX_WIF_CLIENT_ID: ${{ vars.THORYN_SANDBOX_WIF_CLIENT_ID }}
+        run: .thoryn/ci/gate.sh THORYN_ISSUER THORYN_WORKSPACE THORYN_SANDBOX_ENVIRONMENT THORYN_SANDBOX_WIF_CLIENT_ID
+
+  production:
+    name: production — plan + apply
+    needs: sections
+    if: needs.sections.outputs.ready == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.sections.outputs.production-github-environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+      # The production section declares the sandbox environment by this slug.
+      THORYN_SANDBOX_ENVIRONMENT: ${{ vars.THORYN_SANDBOX_ENVIRONMENT }}
+      # An environment-level variable: only a job running in the production GitHub environment reads it.
+      THORYN_PRODUCTION_WIF_CLIENT_ID: ${{ vars.THORYN_PRODUCTION_WIF_CLIENT_ID }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      SECTION: .thoryn/environments/production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the thoryn CLI
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
+        run: .thoryn/ci/login.sh production
+      - name: Plan
+        run: thoryn provision plan --file "$SECTION/provision.yaml"
+      - name: Apply
+        run: thoryn provision apply --file "$SECTION/provision.yaml" --yes
+
+  sandbox:
+    name: sandbox — ${{ github.event_name == 'pull_request' && 'plan' || 'plan + apply' }}
+    needs: [sections, production]
+    # After production (which declares the environments) on main; on its own for a pull request.
+    if: >-
+      always() && needs.sections.outputs.ready == 'true'
+      && (needs.production.result == 'success' || needs.production.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+      THORYN_SANDBOX_ENVIRONMENT: ${{ vars.THORYN_SANDBOX_ENVIRONMENT }}
+      THORYN_SANDBOX_WIF_CLIENT_ID: ${{ vars.THORYN_SANDBOX_WIF_CLIENT_ID }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      GH_TOKEN: ${{ github.token }}
+      SECTION: .thoryn/environments/sandbox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the thoryn CLI
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
+        run: .thoryn/ci/login.sh sandbox
+      - name: Plan
+        run: thoryn provision plan --file "$SECTION/provision.yaml"
+      - name: Apply
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: thoryn provision apply --file "$SECTION/provision.yaml" --yes

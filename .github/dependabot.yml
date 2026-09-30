@@ -10,3 +10,13 @@ updates:
     schedule: { interval: weekly }
     groups:
       npm: { patterns: ["*"] }
+  - package-ecosystem: maven
+    directory: /starters/spring-boot
+    schedule: { interval: weekly }
+    groups:
+      maven: { patterns: ["*"] }
+  - package-ecosystem: nuget
+    directory: /starters/aspnet-core
+    schedule: { interval: weekly }
+    groups:
+      nuget: { patterns: ["*"] }
