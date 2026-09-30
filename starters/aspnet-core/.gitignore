@@ -1,0 +1,14 @@
+bin/
+obj/
+out/
+.env
+app.log
+app.pid
+.thoryn/*.receipt.json
+*.secret
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+.vs/
+*.user
+TestResults/
