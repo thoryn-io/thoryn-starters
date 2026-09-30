@@ -1,12 +1,15 @@
-# Run one starter end to end against staging, exactly as a generated repository would:
-# render it through the render contract (render/render.mjs) with this repository's staging fixture, then
-# run the starter's own .thoryn/ci steps — workload identity sign-in, provision apply, start the app, the
-# Playwright journey, teardown.
+# Run one starter end to end against staging, exactly as a generated repository would. Nothing is
+# rendered: the starter's own .thoryn/ci steps run in place (starters/<stack>), and they get their wiring
+# from the same THORYN_* environment a generated repository's workflow maps from its Actions variables:
+#   THORYN_ISSUER         vars.THORYN_ISSUER
+#   THORYN_WORKSPACE      vars.THORYN_STARTERS_WORKSPACE
+#   THORYN_ENVIRONMENT    ci-<stack>
+#   THORYN_WIF_CLIENT_ID  the stack's vars.THORYN_STARTERS_WIF_<STACK> (input wif-client-id)
+# Then: workload identity sign-in, provision apply, start the app, the Playwright journey, teardown.
 #
-# Staging fixture (one-time setup, see README.md "Staging CI"): workspace $THORYN_STARTERS_WORKSPACE, one
-# sandbox `ci-<stack>` per stack, and in each a workload identity trust pinned to thoryn-io/thoryn-starters
-# whose clientId is the repository variable THORYN_STARTERS_WIF_<STACK>. Until those exist the job skips
-# with a notice.
+# Staging fixture (one-time setup, docs/staging-setup.md): workspace $THORYN_STARTERS_WORKSPACE, one
+# sandbox `ci-<stack>` per stack, and in each a workload identity trust pinned to thoryn-io/thoryn-starters.
+# Until those exist the job skips with a notice.
 name: stack e2e
 
 on:
@@ -62,9 +65,14 @@ jobs:
       cancel-in-progress: false
     env:
       THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
+      THORYN_ENVIRONMENT: ci-${{ inputs.stack }}
+      THORYN_WIF_CLIENT_ID: ${{ inputs.wif-client-id }}
+      # The client's display name (its converge key in the sandbox); a generated repository uses its name.
+      THORYN_APP_NAME: thoryn-starters-${{ inputs.stack }}-ci
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
       GH_TOKEN: ${{ github.token }}
-      REPO_DIR: ${{ github.workspace }}/.render/${{ inputs.stack }}
+      REPO_DIR: ${{ github.workspace }}/starters/${{ inputs.stack }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -79,19 +87,6 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: starters/aspnet-core/global.json
-      - name: Render the starter with the staging fixture (the render contract)
-        env:
-          WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
-          WIF_CLIENT_ID: ${{ inputs.wif-client-id }}
-          STACK: ${{ inputs.stack }}
-        run: |
-          node render/render.mjs --template "starters/$STACK" --out "$REPO_DIR" \
-            --set "workspace=$WORKSPACE" \
-            --set "environment=ci-$STACK" \
-            --set "workloadIdentityClientId=$WIF_CLIENT_ID" \
-            --set "githubOwner=${GITHUB_REPOSITORY%%/*}" \
-            --set "githubRepository=${GITHUB_REPOSITORY##*/}" \
-            --set "appName=thoryn-starters $STACK CI"
       - name: Install app dependencies
         if: inputs.stack == 'express'
         working-directory: ${{ env.REPO_DIR }}
@@ -125,7 +120,5 @@ jobs:
           retention-days: 7
       - name: Remove what this run created
         if: always()
-        run: |
-          if [ -d "$REPO_DIR/.thoryn" ]; then
-            cd "$REPO_DIR" && .thoryn/ci/teardown.sh
-          fi
+        working-directory: ${{ env.REPO_DIR }}
+        run: .thoryn/ci/teardown.sh

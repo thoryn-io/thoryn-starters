@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thoryn.io/schemas/starter-template/v2/template.schema.json",
+  "title": "Thoryn starter template declaration (.thoryn/template.json)",
+  "description": "SSO-3428 — what a starter repository needs from the creation flow. Nothing in a starter is rendered: its pipeline reads its wiring from GitHub Actions variables at run time. This file declares those variables (and at which level to set them), and for each connection (one workload identity trust) its scopes, whether it is the production connection, and the grant its client needs. It stays in the generated repository.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "description", "variables", "connections"],
+  "properties": {
+    "apiVersion": { "const": "thoryn.io/starter-template/v2" },
+    "kind": {
+      "description": "`application`: one app, its own client(s) and sandbox test users. `config`: the workspace's configuration, one section per connection.",
+      "enum": ["application", "config"]
+    },
+    "description": { "type": "string", "minLength": 1 },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "productionEnvironment": {
+          "description": "The GitHub environment the production connection's trust pins and the production job runs in. The creation flow creates it (required reviewers, main only) and sets the environment-level variables in it.",
+          "$ref": "#/$defs/githubEnvironmentName"
+        }
+      }
+    },
+    "variables": {
+      "description": "The GitHub Actions variables the creation flow must set, keyed by name. None of them is a secret.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^THORYN_[A-Z0-9_]+$" },
+      "additionalProperties": { "$ref": "#/$defs/variable" }
+    },
+    "connections": {
+      "description": "One entry per workload identity trust the repository signs in with, keyed by name. In a config project the name is also the section folder under .thoryn/environments/.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" },
+      "additionalProperties": { "$ref": "#/$defs/connection" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "config" } } },
+      "then": { "required": ["github"], "properties": { "github": { "required": ["productionEnvironment"] } } }
+    }
+  ],
+  "$defs": {
+    "githubEnvironmentName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "description"],
+      "properties": {
+        "level": {
+          "description": "`repository`: a repository variable. `environment`: a variable of the GitHub environment named in `environment`, readable only by jobs that run in it.",
+          "enum": ["repository", "environment"]
+        },
+        "environment": { "$ref": "#/$defs/githubEnvironmentName" },
+        "description": { "type": "string", "minLength": 1 }
+      },
+      "if": { "properties": { "level": { "const": "environment" } } },
+      "then": { "required": ["environment"] },
+      "else": { "not": { "required": ["environment"] } }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "production", "clientIdVariable", "provisionFile", "scopes", "grant"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "production": {
+          "description": "True for the production connection: its trust pins github.productionEnvironment, accepts no pull request, and names no sandbox environment.",
+          "type": "boolean"
+        },
+        "clientIdVariable": { "description": "The variable carrying the trust's clientId (wi_...).", "pattern": "^THORYN_[A-Z0-9_]+$", "type": "string" },
+        "environmentVariable": { "description": "The variable carrying the sandbox slug the trust is bound to. Absent for the production connection.", "pattern": "^THORYN_[A-Z0-9_]+$", "type": "string" },
+        "provisionFile": { "description": "The provisioning file this connection converges.", "type": "string", "pattern": "^\\.thoryn/[A-Za-z0-9._/-]+\\.ya?ml$" },
+        "scopes": {
+          "description": "EXACTLY the scopes the trust is created with and the job requests.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^tenant:[a-z-]+\\.[a-z-]+$" }
+        },
+        "grant": {
+          "description": "The access grant the trust's client needs: `manager` on the sandbox (`environment`) or on the whole workspace (`workspace`, production only).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relation", "on"],
+          "properties": {
+            "relation": { "enum": ["manager", "viewer"] },
+            "on": { "enum": ["environment", "workspace"] }
+          }
+        }
+      },
+      "if": { "properties": { "production": { "const": true } } },
+      "then": { "not": { "required": ["environmentVariable"] } },
+      "else": { "required": ["environmentVariable"], "properties": { "grant": { "properties": { "on": { "const": "environment" } } } } }
+    }
+  }
+}

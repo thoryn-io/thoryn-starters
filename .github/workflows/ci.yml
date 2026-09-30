@@ -1,6 +1,8 @@
-# thoryn-starters CI: every starter is built, unit-tested, rendered through the render contract and — once
-# the staging workload identity trusts exist — run end to end against staging. A published template can
-# therefore never be broken (publish.yml only runs after this workflow is green on main).
+# thoryn-starters CI: every starter is built, unit-tested, validated as is against the variable contract and
+# — once the staging workload identity trusts exist — run end to end against staging, with the fixture
+# supplied the way a generated repository gets it (THORYN_* Actions variables mapped into the job's
+# environment). A published template can therefore never be broken (publish.yml only runs after this
+# workflow is green on main).
 name: CI
 
 on:
@@ -14,7 +16,7 @@ permissions:
 
 jobs:
   tooling:
-    name: Render contract, shared files, workflow lint
+    name: Variable contract, shared files, workflow lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,9 +25,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Renderer, app-env and test-inbox unit tests
+      - name: CI-script, validator, app-env and test-inbox unit tests
         run: npm test
-      - name: Shared files in sync; every starter renders and validates against the CLI schemas
+      - name: Shared files in sync; every starter validates as is (no placeholder, variable contract, CLI schema)
         run: npm run check
       - name: actionlint (this repository's and every starter's workflows)
         run: |
@@ -121,45 +123,38 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    defaults:
+      run:
+        working-directory: starters/config
+    # The config starter's own variables, supplied from this repository's staging fixture exactly as a
+    # generated config repository's workflow maps its Actions variables.
     env:
       THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
+      THORYN_SANDBOX_ENVIRONMENT: ci-config
+      THORYN_SANDBOX_WIF_CLIENT_ID: ${{ vars.THORYN_STARTERS_WIF_CONFIG }}
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
       GH_TOKEN: ${{ github.token }}
-      WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
-      WIF_CLIENT_ID: ${{ vars.THORYN_STARTERS_WIF_CONFIG }}
       FORK: ${{ github.event.pull_request.head.repo.fork == true }}
-      REPO_DIR: ${{ github.workspace }}/.render/config
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: gate
         run: |
-          if [ -z "$WIF_CLIENT_ID" ] || [ -z "$WORKSPACE" ] || [ -z "$THORYN_ISSUER" ] || [ "$FORK" = "true" ]; then
+          if [ -z "$THORYN_SANDBOX_WIF_CLIENT_ID" ] || [ -z "$THORYN_WORKSPACE" ] || [ -z "$THORYN_ISSUER" ] || [ "$FORK" = "true" ]; then
             echo "::notice::config staging plan skipped: set THORYN_ISSUER, THORYN_STARTERS_WORKSPACE and THORYN_STARTERS_WIF_CONFIG (docs/staging-setup.md)."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.gate.outputs.ready == 'true'
-        with:
-          node-version: 24
       # Only the sandbox section: a production trust refuses pull_request jobs, and this repository must
       # never change a production plane. The production section is validated statically by `npm run check`.
-      - name: Render the config starter with the staging fixture
+      # Separate steps: install-cli.sh puts the CLI on PATH for the NEXT steps ($GITHUB_PATH).
+      - name: Install the thoryn CLI
         if: steps.gate.outputs.ready == 'true'
-        run: |
-          node render/render.mjs --template starters/config --out "$REPO_DIR" \
-            --set "workspace=$WORKSPACE" \
-            --set "sandboxEnvironment=ci-config" \
-            --set "sandboxWorkloadIdentityClientId=$WIF_CLIENT_ID" \
-            --set "productionWorkloadIdentityClientId=wi_not_used_in_ci" \
-            --set "githubEnvironment=not-used-in-ci" \
-            --set "githubOwner=${GITHUB_REPOSITORY%%/*}" \
-            --set "githubRepository=${GITHUB_REPOSITORY##*/}"
-      - name: Sign in (workload identity) and plan the sandbox section
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (workload identity)
         if: steps.gate.outputs.ready == 'true'
-        working-directory: ${{ env.REPO_DIR }}
-        run: |
-          .thoryn/ci/install-cli.sh
-          thoryn login --connection .thoryn/environments/sandbox/connection.json
-          thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
+        run: .thoryn/ci/login.sh sandbox
+      - name: Plan the sandbox section
+        if: steps.gate.outputs.ready == 'true'
+        run: thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml

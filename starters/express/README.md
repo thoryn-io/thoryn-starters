@@ -1,8 +1,9 @@
-# {{thoryn.githubRepository}}
+# Thoryn Express starter
 
 An Express web app that signs users in with Thoryn and protects its own API. It is an **application
-project** of the Thoryn workspace `{{thoryn.workspace}}`, and it runs against the sandbox environment
-`{{thoryn.environment}}`.
+project** of a Thoryn workspace and runs against one of its sandbox environments. Which workspace and which
+sandbox is not written anywhere in this repository: CI reads them from GitHub Actions variables at run time
+(see [Configuration](#configuration)).
 
 - **Sign-in:** server-side OpenID Connect, authorization code with PKCE (S256), `state` and `nonce`. The ID
   token is validated with its signature pinned to ES256. Tokens stay in the server-side session; the
@@ -20,12 +21,17 @@ You need Node.js 22 or newer and the [`thoryn` CLI](https://github.com/thoryn-io
 ```bash
 npm install
 
-# Once: sign in, create this app's client and a test user in the sandbox, and write .env.
-export THORYN_ISSUER=https://auth.stg.thoryn.org          # your Thoryn platform
-thoryn login --workspace {{thoryn.workspace}}
+# Once: the same values CI reads from the repository's Actions variables.
+export THORYN_ISSUER=https://auth.stg.thoryn.org   # your Thoryn platform
+export THORYN_WORKSPACE=<your workspace>
+export THORYN_ENVIRONMENT=<your sandbox>
+export THORYN_APP_NAME=<a name for your local client>   # its converge key in the sandbox
+
+# Sign in as yourself, create this app's client and a test user in the sandbox, and write .env.
+thoryn login --workspace "$THORYN_WORKSPACE"
 export THORYN_TEST_USER_EMAIL=you+test@example.com THORYN_TEST_USER_PASSWORD='choose-a-Password-1!'
 thoryn provision apply --file .thoryn/provision.yaml
-node .thoryn/app-env.mjs --write .env
+node .thoryn/app-env.mjs --write .env    # or: --workspace <ws> --environment <sandbox> --issuer <url>
 
 # Every time:
 npm start
@@ -54,10 +60,10 @@ so any local port works. Add your real URLs to `.thoryn/provision.yaml` when you
 
 | File | What it is |
 |---|---|
-| `connection.json` | **Who CI is:** workspace `{{thoryn.workspace}}`, environment `{{thoryn.environment}}`, and the workload identity trust pinned to `{{thoryn.githubOwner}}/{{thoryn.githubRepository}}`. No secret. |
-| `provision.yaml` | **What this app owns:** its OAuth client and its test user, in the sandbox. Nothing workspace-wide. |
+| `template.json` | **What this repository needs from Thoryn:** the Actions variables (see [Configuration](#configuration)), and connection `sandbox`, the workload identity trust CI signs in with (its exact scopes and grant). No secret, no workspace name. |
+| `provision.yaml` | **What this app owns:** its OAuth client and its test user, in the sandbox named by `{{env.THORYN_ENVIRONMENT}}` (the CLI fills it in from the environment). Nothing workspace-wide. |
 | `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` after provisioning. |
-| `ci/` | The steps the pipeline runs. |
+| `ci/` | The steps the pipeline runs (`gate.sh`, `login.sh` and `require-vars.sh` read and check the variables). |
 
 ## CI
 
@@ -70,7 +76,30 @@ so any local port works. Add your real URLs to `.thoryn/provision.yaml` when you
    app, run `e2e/` with Playwright (sign in, call the API, sign out, reset the password through the
    sandbox's test inbox), then remove what the run created.
 
-It needs one repository variable, `THORYN_ISSUER`. The job is skipped with a notice while it is not set.
+## Configuration
+
+CI reads its wiring from four **repository variables** (Settings → Secrets and variables → Actions →
+Variables). None is a secret. Thoryn's starter flow sets them when it creates the repository.
+
+| Variable | Meaning |
+|---|---|
+| `THORYN_ISSUER` | The platform base issuer the `thoryn` CLI signs in to, e.g. `https://auth.stg.thoryn.org`. |
+| `THORYN_WORKSPACE` | The workspace slug. |
+| `THORYN_ENVIRONMENT` | The sandbox this app's client and test user live in. |
+| `THORYN_WIF_CLIENT_ID` | The clientId (`wi_…`) of the workload identity trust for this repository in that sandbox. |
+
+If one is missing, the run fails and names it. Two cases skip the Thoryn job with a notice instead:
+
+- the starter template repository itself;
+- a pull request from a fork, which gets no OIDC token.
+
+The first run of a freshly created repository can start before the variables exist. It also skips; re-run
+it, or push.
+
+To point the app at another sandbox, change `THORYN_ENVIRONMENT` and `THORYN_WIF_CLIENT_ID` (a trust is bound
+to one sandbox). No file in the repository changes. Locally, export the same names (see [Run it
+locally](#run-it-locally)). The client's display name defaults to the repository's name; set
+`THORYN_APP_NAME` to override it.
 
 ## Next steps
 

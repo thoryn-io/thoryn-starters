@@ -4,9 +4,10 @@ The source of truth for Thoryn **starter projects**: templates that become a new
 customer's own GitHub, integrated with a Thoryn workspace, with CI that is green on its first push and holds
 **no secret** (it signs in to Thoryn with workload identity).
 
-The starter-project flow in the console (oathy SSO-3310, epic SSO-3304) creates repositories from these
-templates through the Thoryn GitHub App, renders their `.thoryn/` files (see [the render
-contract](#the-render-contract)) and sets their Actions variables.
+The starter-project flow (oathy SSO-3310, epic SSO-3304) creates repositories from these templates through
+the Thoryn GitHub App and sets their GitHub Actions variables. **Nothing is rendered**: a generated
+repository is byte-for-byte its template. It reads its wiring (issuer, workspace, sandbox, workload identity
+client id) from Actions variables at run time. See [the variable contract](#the-variable-contract).
 
 ## Two kinds of project
 
@@ -17,14 +18,14 @@ A workspace is configured by **one config project** and used by **many applicati
 | How many | One per workspace | Many per workspace |
 | Contains | Configuration only, no app code | An app (Spring Boot, ASP.NET Core, Express) |
 | `.thoryn/provision.yaml` declares | Workspace-wide configuration: environments, federation members / IdPs, login methods, login flows, branding, email provider, custom domain. Production and every sandbox are sections. | Only its own OAuth application client(s) and its own sandbox test users. No environment, no workspace configuration. |
-| `.thoryn/connection.json` | One per environment. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | The workspace and the one sandbox environment the app runs against. |
+| Sign-in (`connections` in `.thoryn/template.json`) | One per environment section. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | One: the sandbox the app runs against. |
 | CI | `thoryn provision plan` on pull requests, `apply` on `main`, per environment. | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. |
 | End result | A working sign-in stack, on the customer's own domain once one is configured. | A running app that signs users in and protects its API. |
 
-An application project never hard-codes its issuer. `.thoryn/connection.json` names the workspace and the
-environment; the application's issuer (including an active custom domain) and client id are **resolved at
-run time**, after provisioning, by `.thoryn/app-env.mjs`. A custom domain added later therefore needs no
-change in any application repository.
+No project hard-codes its workspace, its environment or its issuer. The Actions variables name the
+workspace and the environment. The application's issuer (including an active custom domain) and client id
+are **resolved at run time**, after provisioning, by `.thoryn/app-env.mjs`. A custom domain added later
+therefore needs no change in any application repository.
 
 ## Starters
 
@@ -52,85 +53,102 @@ all:
 - Redirect URIs are RFC 8252 loopback URIs (`http://127.0.0.1/callback`, `http://127.0.0.1/signed-out`);
   the platform ignores their port.
 
-## The render contract
+## The variable contract
 
-A template carries placeholders that the creation flow replaces once, when it creates the repository. This
-repository's CI renders every starter the same way before it runs it (`render/render.mjs` is the executable
-definition; `render/render.test.mjs` pins its behaviour).
+A starter carries no per-repository value. Its files are published as they are, and the generated
+repository starts with exactly those files.
 
-1. **Manifest.** Each template has `.thoryn/template.json` (`apiVersion: thoryn.io/starter-template/v1`). It
-   declares the template `kind` (`application` or `config`), the `variables` (each with an anchored
-   `pattern`, a `description` and an `example`), the `files` to render, and the `actionsVariables` the
-   repository needs.
-2. **Placeholders.** `{{thoryn.<variable>}}`, optionally with spaces inside the braces. They appear only in
-   the files the manifest lists. `{{env.NAME}}` in `provision.yaml` is not a render placeholder: the `thoryn`
-   CLI resolves it from the environment at apply time.
-3. **Values.** Every declared variable needs a value, no undeclared value is accepted, and every value must
-   match its variable's `pattern`. The patterns admit only characters that are safe inside a JSON string, a
-   quoted YAML scalar and Markdown, so a value cannot break out of the file it lands in.
-4. **Render.** Replace the placeholders in the listed files, then fail if any `{{thoryn.` token is left
-   anywhere in the repository.
-5. **Drop the manifest.** Delete `.thoryn/template.json`. A starter's pipeline treats the presence of that
-   file as "this is the unrendered template" and skips its Thoryn jobs with a notice (build and unit tests
-   still run), so the template repository itself and a half-created repository are never red.
+1. **Declaration.** Each starter has `.thoryn/template.json` (`apiVersion: thoryn.io/starter-template/v2`,
+   schema [`schemas/template.schema.json`](schemas/template.schema.json)). It stays in the generated
+   repository and declares what the creation flow must set up:
+   - `variables`: every GitHub Actions variable, with its `level`. That is `repository`, or `environment`
+     plus the GitHub environment's name.
+   - `connections`: one per workload identity trust. Each has its `scopes` (exactly what the trust is
+     created with and what CI requests), `production` (true or false), the variables carrying its client id
+     and sandbox, its provisioning file, and the `grant` its client needs.
+   - `github.productionEnvironment` (config only): the GitHub environment the production trust pins and the
+     production job runs in.
+2. **Run time.** The workflows map `${{ vars.THORYN_* }}` into the job's environment. `.thoryn/ci/login.sh
+   <connection>` signs in with the connection's variables and scopes. In `provision.yaml`, the `thoryn` CLI
+   fills in `{{env.NAME}}` from the environment when it reads the file, the resource's `environment` too
+   (thoryn-cli SSO-3430).
+3. **Missing values.** A missing variable fails the run and names it (`.thoryn/ci/require-vars.sh`). The
+   Thoryn jobs skip with a notice in three cases:
+   - the template repository itself (`github.event.repository.is_template`);
+   - a fork's pull request;
+   - the first push of a just-created repository when no variable is set yet. The creation flow sets them
+     right after it generates the repository, and that first run can start first.
+4. **Local runs.** Export the same names. Every script, `app-env.mjs` included, reads them from the
+   environment (`app-env.mjs` also takes `--issuer`, `--workspace`, `--environment`).
 
-### Application template variables
+`npm run check` fails when a render placeholder appears anywhere in this repository, when a starter's
+declaration drifts from the contract below, or when a workflow reads an undeclared variable.
 
-| Variable | Used in | Meaning | Example |
-|---|---|---|---|
-| `workspace` | connection.json, README | Workspace slug | `acme` |
-| `environment` | connection.json, provision.yaml, README | The sandbox the app, its client and its test user live in; the trust is bound to it | `dev` |
-| `workloadIdentityClientId` | connection.json | The trust's `clientId` (`wi_…`) | `wi_0123456789abcdef01234567` |
-| `githubOwner`, `githubRepository` | connection.json, README | The repository the trust pins (diagnostics only; the trust itself pins the immutable ids) | `acme`, `billing-web` |
-| `appName` | provision.yaml | Display name of the app's OAuth client; its converge key in the environment | `billing-web` |
+### Application project
 
-### Config template variables
+All four are repository variables.
 
-| Variable | Used in | Meaning | Example |
-|---|---|---|---|
-| `workspace` | both connection.json, README | Workspace slug | `acme` |
-| `sandboxEnvironment` | sandbox section, production provision.yaml, README | The first sandbox's slug (production declares it; the sandbox section configures it) | `dev` |
-| `productionWorkloadIdentityClientId` | production connection.json | The production trust's `clientId` | `wi_…prod` |
-| `sandboxWorkloadIdentityClientId` | sandbox connection.json | The sandbox trust's `clientId` | `wi_…dev` |
-| `githubEnvironment` | production connection.json, README | The GitHub environment the production trust pins; the production job runs in it | `thoryn-production` |
-| `githubOwner`, `githubRepository` | both connection.json, README | The repository the trusts pin | `acme`, `thoryn-config` |
+| Variable | Meaning |
+|---|---|
+| `THORYN_ISSUER` | Platform base issuer the CLI signs in to, e.g. `https://auth.stg.thoryn.org`. |
+| `THORYN_WORKSPACE` | Workspace slug. |
+| `THORYN_ENVIRONMENT` | The sandbox the app, its client and its test user live in; the trust is bound to it. |
+| `THORYN_WIF_CLIENT_ID` | The trust's `clientId` (`wi_…`). |
 
-The workflow reads the production job's GitHub environment from the production `connection.json`, so the
-workflow file itself is not rendered (an unrendered placeholder there would break the template
-repository's own CI).
+Connection `sandbox` has these scopes:
 
-### What the creation flow sets up besides the files
+- `tenant:applications.read`, `tenant:applications.write`;
+- `tenant:users.read`, `tenant:users.write`;
+- `tenant:environments.read`, which reads the sandbox's test inbox.
 
-For an application project (all through product APIs, nothing seeded):
+Its grant is `manager` on the sandbox. The client's display name, its converge key in the sandbox, is the
+repository's name (`THORYN_APP_NAME` overrides it). It is not an Actions variable.
+
+### Config project
+
+| Variable | Level | Meaning |
+|---|---|---|
+| `THORYN_ISSUER` | repository | Platform base issuer. |
+| `THORYN_WORKSPACE` | repository | Workspace slug. |
+| `THORYN_SANDBOX_ENVIRONMENT` | repository | The first sandbox's slug (production declares it; the sandbox section configures it). |
+| `THORYN_SANDBOX_WIF_CLIENT_ID` | repository | The sandbox trust's `clientId`. |
+| `THORYN_PRODUCTION_WIF_CLIENT_ID` | environment `thoryn-production` | The production trust's `clientId`; only the production job can read it. |
+
+Connection `production` has `tenant:environments.read/.write` and `tenant:idp.read/.write`. Its grant is
+`manager` on the **workspace**, because creating an environment needs `manager` on its parent. Connection
+`sandbox` has `tenant:environments.read` and `tenant:idp.read/.write`, with `manager` on the sandbox.
+
+The production GitHub environment's name comes from `github.productionEnvironment`. The workflow reads it
+from `template.json`, so it needs no extra variable.
+
+### What the creation flow sets up
+
+All of it goes through product APIs; nothing is seeded.
+
+For an application project:
 
 - the workload identity trust in the sandbox, pinned to the new repository's immutable ids, with exactly
-  the scopes in `.thoryn/connection.json`: `tenant:applications.read`, `tenant:applications.write`,
-  `tenant:users.read`, `tenant:users.write`, `tenant:environments.read` (the last one reads the sandbox's
-  test inbox);
-- `manager` on that sandbox for the trust's client (`client:<wi_…> manager environment:<id>`): scopes are
+  the connection's scopes;
+- `manager` on that sandbox for the trust's client (`client:<wi_…> manager environment:<id>`). Scopes are
   the ceiling, the grant is the gate (ADR 2026-09-15, platform resource authorization);
-- the Actions variable `THORYN_ISSUER`: the platform base issuer the CLI signs in to (for example
-  `https://auth.stg.thoryn.org`). The CLI has no built-in production issuer yet, so it is required for now.
+- the four repository variables.
 
-It does **not** register the application client: the application's own CI does that on its first run
-(`thoryn provision apply`), and adopts it on later runs. It does not set the application's issuer or client
-id either; those are resolved at run time.
+It does **not** register the application client. The application's own CI does that on its first run
+(`thoryn provision apply`), and adopts it on later runs. It does not set the application's issuer or
+client id either; those are resolved at run time.
 
 For the config project:
 
-- the sandbox environment itself (its trust must live in it), created with the display name the production
-  section declares (`Sandbox <slug>`) so the first apply adopts it unchanged;
-- a **production** trust pinned to the repository **and** the GitHub environment `githubEnvironment`
-  (`confirmProduction`), with the production connection's scopes (`tenant:environments.read/.write`,
-  `tenant:idp.read/.write`), and `manager` on the **workspace** for its client, because creating an
-  environment needs `manager` on its parent. That is the widest grant in the model, and it is why the
-  production trust accepts only jobs in that GitHub environment and never a pull request;
-- a **sandbox** trust in the sandbox, with the sandbox connection's scopes (`tenant:environments.read`,
-  `tenant:idp.read/.write`), and `manager` on that sandbox for its client;
-- the Actions variable `THORYN_ISSUER`.
-
-GitHub creates the GitHub environment the first time the production job references it; add required
-reviewers there.
+- the sandbox environment itself (its trust must live in it). It is created with the display name the
+  production section declares (`Sandbox <slug>`), so the first apply adopts it unchanged;
+- the GitHub environment `github.productionEnvironment`, with required reviewers and restricted to `main`;
+- a **production** trust pinned to the repository **and** that GitHub environment (`confirmProduction`),
+  with the production connection's scopes, and `manager` on the **workspace** for its client. That is the
+  widest grant in the model. It is why the production trust accepts only jobs in that GitHub environment
+  and never a pull request;
+- a **sandbox** trust in the sandbox, with the sandbox connection's scopes, and `manager` on that sandbox
+  for its client;
+- the four repository variables, and `THORYN_PRODUCTION_WIF_CLIENT_ID` in the production GitHub environment.
 
 ## Publishing: one template repository per starter
 
@@ -144,12 +162,13 @@ are developed and tested. `.github/workflows/publish.yml` mirrors `starters/<nam
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- **tooling**: renderer and helper unit tests, `shared/` drift check, every starter rendered with its example
-  values and validated against the CLI's connection and provisioning schemas (`schemas/`), actionlint.
+- **tooling**: unit tests (CI scripts, `app-env.mjs`, the validator, test-inbox), `shared/` drift check,
+  every starter validated as is (no placeholder, declaration against `schemas/template.schema.json` and the
+  variable contract, provisioning files against the CLI's schema), actionlint.
 - **per starter**: build and unit tests.
-- **per starter, staging e2e** (`stack-e2e.yml`): render the starter with the staging fixture, then run its
-  own `.thoryn/ci` steps exactly as a generated repository does. It skips with a notice until the fixture
-  variables exist.
+- **per starter, staging e2e** (`stack-e2e.yml`): run the starter's own `.thoryn/ci` steps in place, with the
+  staging fixture supplied as the same `THORYN_*` environment a generated repository's workflow maps from
+  its Actions variables. It skips with a notice until the fixture variables exist.
 
 The staging fixture is one workspace with one sandbox per starter (`ci-<starter>`), each holding a workload
 identity trust pinned to `thoryn-io/thoryn-starters`. The one-time setup is in
@@ -159,14 +178,14 @@ identity trust pinned to `thoryn-io/thoryn-starters`. The one-time setup is in
 
 ```bash
 npm ci
-npm test                 # renderer, app-env and test-inbox unit tests
-npm run sync             # copy shared/ into every application starter (commit the result)
-npm run check            # drift check + render and validate every starter
-node render/render.mjs --template starters/express --out /tmp/acme-web --example
+npm test                 # CI-script, validator, app-env and test-inbox unit tests
+npm run sync             # copy shared/ into every starter (commit the result)
+npm run check            # drift check + validate every starter as is
 ```
 
 `shared/` holds what every application starter carries unchanged: the Playwright journey (`shared/e2e`), the
-CI steps (`shared/thoryn/ci`), `app-env.mjs` and the template manifest. Edit it there and run `npm run
+CI steps (`shared/thoryn/ci`), `app-env.mjs`, the template declaration and the provisioning file. The
+config starter shares the CLI installer and the variable and sign-in scripts. Edit it there and run `npm run
 sync`; CI fails when a starter's copy drifts.
 
 ## Security

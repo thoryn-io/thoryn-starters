@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const base = "https://raw.githubusercontent.com/thoryn-io/thoryn-cli/main/src/main/resources";
 for (const [from, to] of [
-  ["examples/connection.schema.json", "connection.schema.json"],
   ["provision/provision.schema.json", "provision.schema.json"],
 ]) {
   const resp = await fetch(`${base}/${from}`);

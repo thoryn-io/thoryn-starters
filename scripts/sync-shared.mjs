@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// The application starters share their e2e journey, the CI scripts, app-env.mjs, the template manifest and
-// their .thoryn/ connection and provisioning templates.
+// The application starters share their e2e journey, the CI scripts, app-env.mjs, the template declaration
+// (.thoryn/template.json) and their provisioning file. The config starter shares the CLI installer and the
+// variable / sign-in scripts.
 // `shared/` is the single source; this script copies it into every application starter. The published
 // templates must be self-contained, so the copies are committed — and `--check` (CI) fails on any drift.
 //
@@ -24,7 +25,6 @@ const MAPPINGS = [
   ["e2e/lib", "e2e/lib"],
   ["thoryn/app-env.mjs", ".thoryn/app-env.mjs"],
   ["thoryn/template.json", ".thoryn/template.json"],
-  ["thoryn/connection.json", ".thoryn/connection.json"],
   ["thoryn/provision.yaml", ".thoryn/provision.yaml"],
   ["thoryn/ci", ".thoryn/ci"],
 ];
@@ -39,8 +39,8 @@ function files(path) {
   return out;
 }
 
-/** The config starter shares only the CLI installer. */
-const CONFIG_MAPPINGS = [["thoryn/ci/install-cli.sh", ".thoryn/ci/install-cli.sh"]];
+/** The config starter shares the CLI installer and the variable / sign-in scripts (not the app's steps). */
+const CONFIG_MAPPINGS = ["install-cli.sh", "require-vars.sh", "gate.sh", "login.sh"].map((f) => [`thoryn/ci/${f}`, `.thoryn/ci/${f}`]);
 
 export function plan() {
   const pairs = [];

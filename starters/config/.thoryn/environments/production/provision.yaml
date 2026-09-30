@@ -1,5 +1,7 @@
 # PRODUCTION section of the workspace configuration — `thoryn provision apply` converges it on every push to
-# main, signed in with the production workload identity trust (see connection.json next to this file).
+# main, signed in with the production workload identity trust (connection `production` in
+# .thoryn/template.json; its clientId is the THORYN_PRODUCTION_WIF_CLIENT_ID variable of the production
+# GitHub environment).
 #
 # The config project owns everything workspace-wide: the environments themselves, and per environment the
 # sign-in methods, flows, branding, email provider, identity providers and (soon) the custom domain.
@@ -7,22 +9,23 @@
 #
 # Resources without `environment:` live on the production plane. No secrets in this file: name the
 # environment variable that carries one (`smtpPasswordEnv`, `clientSecretEnv`) and pass it from a GitHub
-# secret in .github/workflows/thoryn.yml.
+# secret in .github/workflows/thoryn.yml. `{{env.NAME}}` is filled in by the `thoryn` CLI from the
+# environment when it reads the file; the workflow maps the Actions variables into it.
 apiVersion: thoryn.io/provision/v1
 resources:
   # Every sandbox of the workspace. Each one also has its own section under .thoryn/environments/.
   - kind: environment
     name: sandbox
     spec:
-      slug: "{{thoryn.sandboxEnvironment}}"
-      displayName: "Sandbox {{thoryn.sandboxEnvironment}}"
+      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
+      displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"
 
   # How people sign in on production.
   - kind: loginMethods
     spec:
       methods: ["password", "passkey"]
 
-  # ── Add more as you need them (and add the matching scopes to connection.json and to the trust) ──────
+  # ── Add more as you need them (and add the matching scopes to .thoryn/template.json and the trust) ──
   #
   # Branding of the hosted sign-in pages (scope tenant:idp.write):
   # - kind: loginTheme
