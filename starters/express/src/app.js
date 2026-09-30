@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { fileURLToPath } from "node:url";
 import { createOidc } from "./oidc.js";
 import { createAccessTokenVerifier, requireBearer } from "./api-auth.js";
+import { canonicalLocalHost } from "./canonical-host.js";
 import { errorPage, homePage, profilePage } from "./pages.js";
 
 export function createApp(config, { fetchImpl = fetch, logger = console } = {}) {
@@ -17,6 +18,8 @@ export function createApp(config, { fetchImpl = fetch, logger = console } = {}) 
 
   const app = express();
   app.disable("x-powered-by");
+  // Local development: localhost and 127.0.0.1 both work (see canonical-host.js).
+  app.use(canonicalLocalHost(config.baseUrl));
   app.use(
     helmet({
       contentSecurityPolicy: {

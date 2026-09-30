@@ -225,6 +225,9 @@ export function checkStarter(dir, schemas) {
       if (!text.includes(`.thoryn/ci/${step}`)) fail(`the workflow does not run .thoryn/ci/${step}`);
     }
   }
+  // SSO-3445 — the generated local test user (.thoryn/local.env) must never be committed.
+  const gitignore = existsSync(join(dir, ".gitignore")) ? readFileSync(join(dir, ".gitignore"), "utf8").split("\n") : [];
+  if (!gitignore.includes(".thoryn/local.env")) fail(".gitignore must list .thoryn/local.env (the local sandbox test user)");
   if (existsSync(join(dir, ".thoryn/connection.json"))) fail(".thoryn/connection.json is gone: sign-in is declared by template.json connections");
   return problems;
 }

@@ -116,6 +116,8 @@ public static class StarterApp
         builder.Services.AddHttpClient();
 
         var app = builder.Build();
+        // Local development: localhost and 127.0.0.1 both work (see CanonicalLocalHost).
+        app.UseCanonicalLocalHost(settings.BaseUrl);
         app.UseStaticFiles();
         app.UseAuthentication();
         app.UseAuthorization();

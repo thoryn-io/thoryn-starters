@@ -193,6 +193,25 @@ class StarterApplicationTests {
         }
     }
 
+    /** A raw request with a chosen Host header (java.net.http does not let a caller set Host). */
+    private static String rawGet(String host, String pathAndQuery) throws Exception {
+        try (var socket = new java.net.Socket("127.0.0.1", PORT)) {
+            socket.getOutputStream().write(("GET " + pathAndQuery + " HTTP/1.1\r\nHost: " + host
+                    + "\r\nConnection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            return new String(socket.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII);
+        }
+    }
+
+    @Test
+    void aGetOnAnotherLoopbackHostIsRedirectedToTheBaseUrl() throws Exception {
+        var resp = rawGet("localhost:" + PORT, "/profile?tab=api");
+        assertThat(resp).startsWith("HTTP/1.1 302");
+        assertThat(resp).containsIgnoringCase("location: " + BASE + "/profile?tab=api\r\n");
+        // The session is never started on the wrong host.
+        assertThat(resp.toLowerCase()).doesNotContain("set-cookie");
+        assertThat(rawGet("127.0.0.1:" + PORT, "/health")).startsWith("HTTP/1.1 200");
+    }
+
     @Test
     void healthAnswersOk() throws Exception {
         assertThat(get("/health", null, null).body()).isEqualTo("ok");

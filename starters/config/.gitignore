@@ -1,2 +1,5 @@
 *.receipt.json
 *.secret
+
+# The local sandbox test user (.thoryn/ci/provision.sh): owner-only, never committed.
+.thoryn/local.env

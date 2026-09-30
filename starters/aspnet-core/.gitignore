@@ -12,3 +12,6 @@ e2e/playwright-report/
 .vs/
 *.user
 TestResults/
+
+# The local sandbox test user (.thoryn/ci/provision.sh): owner-only, never committed.
+.thoryn/local.env

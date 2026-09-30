@@ -143,3 +143,38 @@ test("GET /health answers ok", async () => {
   const resp = await fetchApp("/health");
   assert.equal(resp.status, 200);
 });
+
+/** A raw request with a chosen Host header (fetch does not let a caller set Host). */
+async function withHost(host, path, method = "GET") {
+  const { default: http } = await import("node:http");
+  const u = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: u.hostname, port: u.port, path, method, headers: { host } }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode, location: res.headers.location }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("a GET on another loopback host is redirected to the same path and query on the base URL", async () => {
+  const port = new URL(base).port;
+  const r = await withHost(`localhost:${port}`, "/profile?tab=api");
+  assert.equal(r.status, 302);
+  assert.equal(r.location, `${base}/profile?tab=api`);
+  // The path cannot move the redirect off the base URL's origin.
+  const odd = await withHost(`localhost:${port}`, "//evil.example/x");
+  assert.equal(new URL(odd.location).origin, base);
+  // Another port on the same name is another host, too.
+  assert.equal((await withHost("127.0.0.1:1", "/")).location, `${base}/`);
+});
+
+test("the canonical-host redirect never echoes the Host header, refuses other methods, and leaves the base host alone", async () => {
+  const port = new URL(base).port;
+  assert.equal((await withHost(`[::1]:${port}`, "/login")).location, `${base}/login`);
+  assert.equal((await withHost(`localhost:${port}`, "/logout", "POST")).status, 400);
+  assert.equal((await withHost(`127.0.0.1:${port}`, "/health")).status, 200);
+  // A non-loopback Host (a proxy, a deployment) is not redirected.
+  assert.equal((await withHost("app.example.com", "/health")).status, 200);
+});

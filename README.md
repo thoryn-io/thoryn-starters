@@ -48,10 +48,15 @@ all:
   every access token's `aud`, RFC 9068 §2.2), expiry and `client_id` checked. Anything else gets `401` with a
   Bearer challenge.
 - `GET /health`: liveness.
-- Works out of the box from a local machine, with no Actions variable (SSO-3445). Run `thoryn login`, then
-  `thoryn env use <sandbox>`, then `.thoryn/ci/provision.sh`, which creates a local client and writes
-  `.env`. Then start the app (`npm start` / `./mvnw spring-boot:run` / `dotnet run`). The app reads
-  `OIDC_ISSUER` and `OIDC_CLIENT_ID` from the environment or `.env`.
+- Works out of the box from a local machine, with no Actions variable (SSO-3445):
+  1. `thoryn login`, then `thoryn env use <sandbox>`.
+  2. `.thoryn/ci/provision.sh`. It creates a local client, generates a sandbox test user into
+     `.thoryn/local.env` (0600, gitignored, reused), and writes `.env`.
+  3. Start the app: `npm start` / `./mvnw spring-boot:run` / `dotnet run`.
+
+  The app reads `OIDC_ISSUER` and `OIDC_CLIENT_ID` from the environment or `.env`. With a loopback base URL,
+  a GET on another loopback host is redirected to the same path and query on the base URL, so
+  `http://localhost:8080` and `http://127.0.0.1:8080` both work.
 - The **sandbox** client registers two kinds of local callback, and never on production:
   - RFC 8252 loopback URIs, `http://127.0.0.1/callback` and `http://127.0.0.1/signed-out`, whose port
     the platform ignores;

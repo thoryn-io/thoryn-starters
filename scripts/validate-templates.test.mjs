@@ -99,3 +99,9 @@ test("a plain-http redirect URI is loopback-only, names the localhost port, and 
 `));
   assert.match(checkStarter(config, schemas).join("\n"), /belongs on a sandbox client, never on production/);
 });
+
+test("every starter's .gitignore keeps the generated local test user out of git", () => {
+  const dir = copy("aspnet-core");
+  edit(dir, ".gitignore", (t) => t.replace(".thoryn/local.env", ""));
+  assert.match(checkStarter(dir, schemas).join("\n"), /\.gitignore must list \.thoryn\/local\.env/);
+});

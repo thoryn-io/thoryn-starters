@@ -216,6 +216,38 @@ public sealed class StarterAppTests(AppFixture f) : IClassFixture<AppFixture>
     }
 
     [Fact]
+    public async Task A_get_on_another_loopback_host_is_redirected_to_the_same_path_and_query_on_the_base_url()
+    {
+        var port = new Uri(f.Base).Port;
+        using var req = new HttpRequestMessage(HttpMethod.Get, f.Base + "/profile?tab=api");
+        req.Headers.Host = $"localhost:{port}";
+        var resp = await _http.SendAsync(req, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Redirect, resp.StatusCode);
+        Assert.Equal(f.Base + "/profile?tab=api", Location(resp).OriginalString);
+        Assert.False(resp.Headers.Contains("Set-Cookie"), "no session is started on the wrong host");
+
+        using var post = new HttpRequestMessage(HttpMethod.Post, f.Base + "/logout");
+        post.Headers.Host = $"localhost:{port}";
+        Assert.Equal(HttpStatusCode.BadRequest, (await _http.SendAsync(post, TestContext.Current.CancellationToken)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8080", "GET", "localhost:8080", "/x?y=1", "http://127.0.0.1:8080/x?y=1")]
+    [InlineData("http://127.0.0.1:8080", "GET", "[::1]:8080", "/", "http://127.0.0.1:8080/")]
+    [InlineData("http://127.0.0.1:8080", "GET", "127.0.0.1:9090", "/", "http://127.0.0.1:8080/")]
+    [InlineData("http://127.0.0.1:8080", "GET", "localhost:8080", "//evil.example/x", "http://127.0.0.1:8080//evil.example/x")]
+    [InlineData("http://127.0.0.1:8080", "POST", "localhost:8080", "/logout", "")]
+    [InlineData("http://127.0.0.1:8080", "GET", "127.0.0.1:8080", "/", null)]
+    [InlineData("http://127.0.0.1:8080", "GET", "evil.example", "/", null)]
+    [InlineData("http://127.0.0.1:8080", "GET", null, "/", null)]
+    [InlineData("https://app.example.com", "GET", "localhost:8080", "/", null)]
+    public void Canonical_local_host_redirects_only_between_loopback_hosts_and_only_to_the_base_url(
+        string baseUrl, string method, string? host, string pathAndQuery, string? expected)
+    {
+        Assert.Equal(expected, CanonicalLocalHost.Decide(baseUrl, method, host, pathAndQuery));
+    }
+
+    [Fact]
     public async Task Health_answers_ok()
     {
         Assert.Equal("ok", await (await Get("/health")).Content.ReadAsStringAsync(TestContext.Current.CancellationToken));

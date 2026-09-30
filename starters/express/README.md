@@ -29,14 +29,14 @@ thoryn workspace switch <your workspace>
 thoryn env use <your sandbox>
 
 # Once: create your local client and a test user in that sandbox, and write .env.
-export THORYN_TEST_USER_EMAIL=you+test@example.com THORYN_TEST_USER_PASSWORD='choose-a-Password-1!'
 .thoryn/ci/provision.sh
 
 # Every time:
 npm start
 ```
 
-Open <http://127.0.0.1:8080> and sign in with the test user.
+Open <http://localhost:8080> or <http://127.0.0.1:8080>; both work. Sign in with the test user that
+`provision.sh` printed.
 
 - `.thoryn/ci/provision.sh` reads the workspace, the platform and the sandbox from your session. An
   exported `THORYN_ISSUER`, `THORYN_WORKSPACE` or `THORYN_ENVIRONMENT` wins. Instead of `thoryn env use`,
@@ -44,6 +44,13 @@ Open <http://127.0.0.1:8080> and sign in with the test user.
 - It converges a client of your own, `<repository>-local-<your user name>` (set `THORYN_APP_NAME` to choose
   another), so a CI run never deletes the client your local app uses. It then writes `OIDC_ISSUER` and
   `OIDC_CLIENT_ID` to `.env`.
+- **The test user.** The first local run generates one: `dev-<your user name>-<random>@example.com`, with a
+  random password that meets the sandbox password policy. It writes both to `.thoryn/local.env`, which is
+  owner-only (mode 0600) and gitignored, and prints the email, never the password. Later runs reuse the
+  file. An exported `THORYN_TEST_USER_EMAIL` / `THORYN_TEST_USER_PASSWORD` wins. The local e2e journey
+  (`cd e2e && npx playwright test`) reads the file too, and writes back the new password when its
+  password-reset step changes it.
+- `provision.sh` refuses production: an application's client and test user live in a sandbox only.
 - Your session needs the application and user scopes in that sandbox.
 - `thoryn provision destroy --file .thoryn/provision.yaml` removes what your apply created.
 
@@ -53,9 +60,13 @@ does; never add them to a production client:
 - `http://127.0.0.1/callback` and `/signed-out`, RFC 8252 loopback URIs whose port the platform ignores.
   This is the default: the app listens on, and redirects to, `http://127.0.0.1:8080`.
 - `http://localhost:8080/callback` and `/signed-out`. The platform matches `localhost` exactly, port
-  included. To browse at <http://localhost:8080>, start the app with `APP_BASE_URL=http://localhost:8080`.
-  Sign-in keeps its session cookie on the host you started from, so open the app on the host its base URL
-  names.
+  included. Use them by starting the app with `APP_BASE_URL=http://localhost:8080`.
+
+You need neither variable to browse on either address. Sign-in keeps its session cookie on the host the
+browser used, so the app has one canonical local host: its base URL. A GET on another loopback address, for
+example <http://localhost:8080> while the base URL is `http://127.0.0.1:8080`, is redirected to the same path
+and query on the base URL. Other methods get 400. The redirect is built only from the configured base URL,
+never from the Host header, and a deployed app (a non-loopback base URL) is never redirected.
 
 ### Where the settings come from
 
