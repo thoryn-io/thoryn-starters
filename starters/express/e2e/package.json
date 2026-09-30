@@ -1,0 +1,13 @@
+{
+  "name": "starter-e2e",
+  "private": true,
+  "description": "Browser sign-in journey against the Thoryn sandbox this repository provisions (Playwright).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:unit": "node --test \"lib/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

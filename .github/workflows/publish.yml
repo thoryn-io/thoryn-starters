@@ -1,0 +1,91 @@
+# Mirror every starter to its template repository (thoryn-io/starter-<name>) once CI is green on main.
+# The starter-project flow generates customer repositories from those template repositories.
+#
+# Needs a GitHub App installed on the template repositories with Contents: read & write:
+#   repository variable STARTERS_PUBLISH_APP_ID, repository secret STARTERS_PUBLISH_APP_PRIVATE_KEY.
+# Without them the job skips with a notice. See docs/publishing.md.
+name: Publish templates
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-templates
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Which starters
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      starters: ${{ steps.list.outputs.starters }}
+      ready: ${{ steps.list.outputs.ready }}
+      sha: ${{ steps.list.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: list
+        env:
+          APP_ID: ${{ vars.STARTERS_PUBLISH_APP_ID }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "starters=$(find starters -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [ -z "$APP_ID" ]; then
+            echo "::notice::Publishing skipped: set STARTERS_PUBLISH_APP_ID and STARTERS_PUBLISH_APP_PRIVATE_KEY (docs/publishing.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish ${{ matrix.starter }}
+    needs: plan
+    if: needs.plan.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        starter: ${{ fromJSON(needs.plan.outputs.starters) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: source
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.STARTERS_PUBLISH_APP_ID }}
+          private-key: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: starter-${{ matrix.starter }}
+      - name: Mirror starters/${{ matrix.starter }} to ${{ github.repository_owner }}/starter-${{ matrix.starter }}
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          STARTER: ${{ matrix.starter }}
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          target="$OWNER/starter-$STARTER"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${target}.git" target
+          rsync -a --delete --exclude .git --exclude node_modules "source/starters/$STARTER/" target/
+          cd target
+          git add -A
+          if git diff --cached --quiet; then
+            echo "$target is already up to date."
+            exit 0
+          fi
+          git -c user.name="thoryn-starters publish" -c user.email="noreply@thoryn.io" \
+            commit -q -m "Publish from thoryn-io/thoryn-starters@${SHA}"
+          git push -q origin HEAD
+          echo "::notice::Published $target from ${SHA}."

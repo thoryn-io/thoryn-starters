@@ -1,0 +1,21 @@
+{
+  "name": "thoryn-starters",
+  "private": true,
+  "description": "Source of truth for the Thoryn starter project templates (tooling only; each starter has its own build).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"render/*.test.mjs\" \"shared/thoryn/*.test.mjs\" \"shared/e2e/lib/*.test.mjs\"",
+    "sync": "node scripts/sync-shared.mjs",
+    "check": "node scripts/sync-shared.mjs --check && node scripts/validate-templates.mjs",
+    "render": "node render/render.mjs",
+    "schemas:refresh": "node scripts/refresh-schemas.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.1"
+  }
+}

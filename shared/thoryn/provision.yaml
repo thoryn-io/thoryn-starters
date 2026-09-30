@@ -1,0 +1,31 @@
+# What this application owns in Thoryn — converged by `thoryn provision apply --file .thoryn/provision.yaml`.
+#
+# An APPLICATION project declares only its own OAuth client and its own sandbox test user. The environment
+# and all workspace-wide sign-in configuration (login methods, branding, email, custom domain) belong to the
+# workspace's CONFIG project, never to an application.
+#
+# No secrets here: the test user's email and password come from the environment at apply time
+# (`{{env.NAME}}` and `passwordEnv`). CI creates a fresh user per run and deletes it afterwards.
+apiVersion: thoryn.io/provision/v1
+resources:
+  - kind: application
+    name: web
+    environment: "{{thoryn.environment}}"
+    spec:
+      displayName: "{{thoryn.appName}}"
+      clientType: public                  # server-side app, but no secret to store: PKCE proves the client
+      grantTypes: ["authorization_code"]
+      scopes: ["openid", "profile", "email"]
+      # RFC 8252 loopback URIs: the platform ignores the port, so any local port works.
+      redirectUris: ["http://127.0.0.1/callback"]
+      postLogoutRedirectUris: ["http://127.0.0.1/signed-out"]
+
+  - kind: user
+    name: test-user
+    environment: "{{thoryn.environment}}"
+    spec:
+      email: "{{env.THORYN_TEST_USER_EMAIL}}"
+      passwordEnv: THORYN_TEST_USER_PASSWORD
+      givenName: "Test"
+      familyName: "User"
+      emailVerified: true
