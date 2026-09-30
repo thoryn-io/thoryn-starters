@@ -8,10 +8,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test \"render/*.test.mjs\" \"shared/thoryn/*.test.mjs\" \"shared/e2e/lib/*.test.mjs\"",
+    "test": "node --test \"scripts/*.test.mjs\" \"shared/thoryn/*.test.mjs\" \"shared/e2e/lib/*.test.mjs\"",
     "sync": "node scripts/sync-shared.mjs",
     "check": "node scripts/sync-shared.mjs --check && node scripts/validate-templates.mjs",
-    "render": "node render/render.mjs",
     "schemas:refresh": "node scripts/refresh-schemas.mjs"
   },
   "devDependencies": {

@@ -1,11 +1,25 @@
 #!/usr/bin/env bash
-# Sign in with workload identity (no secret) and converge .thoryn/provision.yaml into the sandbox, then
-# export the application's run-time settings (OIDC_ISSUER, OIDC_CLIENT_ID, …) to the job.
-# Run from the repository root, inside a job with `permissions: id-token: write`.
-#   THORYN_ISSUER   platform base issuer (repository variable), e.g. https://auth.stg.thoryn.org
+# Sign in and converge .thoryn/provision.yaml into the sandbox, then export the application's run-time
+# settings (OIDC_ISSUER, OIDC_CLIENT_ID, …). Run from the repository root.
+#
+# The wiring comes from the environment, never from a file in the repository:
+#   THORYN_ISSUER         platform base issuer, e.g. https://auth.stg.thoryn.org
+#   THORYN_WORKSPACE      the workspace
+#   THORYN_ENVIRONMENT    the sandbox the app's client and test user live in
+#   THORYN_WIF_CLIENT_ID  the workload identity trust (GitHub Actions only)
+# In GitHub Actions these are Actions variables and the job signs in with workload identity (it needs
+# `permissions: id-token: write`). Locally, export the first three and sign in yourself first:
+# `thoryn login --workspace "$THORYN_WORKSPACE"`.
 set -euo pipefail
+here="$(dirname "$0")"
 
-: "${THORYN_ISSUER:?set the THORYN_ISSUER repository variable to the platform base issuer, e.g. https://auth.stg.thoryn.org}"
+"$here/require-vars.sh" THORYN_ISSUER THORYN_WORKSPACE THORYN_ENVIRONMENT
+
+# The client's display name is its converge key in the sandbox: the repository's name, unless set.
+if [ -z "${THORYN_APP_NAME:-}" ]; then
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then THORYN_APP_NAME="${GITHUB_REPOSITORY##*/}"; else THORYN_APP_NAME="$(basename "$PWD")"; fi
+fi
+export THORYN_APP_NAME
 
 # A fresh test user for this run: provision.yaml reads both values from the environment at apply time
 # (`{{env.THORYN_TEST_USER_EMAIL}}`, `passwordEnv: THORYN_TEST_USER_PASSWORD`). teardown.sh deletes it.
@@ -21,10 +35,15 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   {
     echo "THORYN_TEST_USER_EMAIL=$THORYN_TEST_USER_EMAIL"
     echo "THORYN_TEST_USER_PASSWORD=$THORYN_TEST_USER_PASSWORD"
+    echo "THORYN_APP_NAME=$THORYN_APP_NAME"
   } >> "$GITHUB_ENV"
 fi
 
-thoryn login --connection .thoryn/connection.json
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  "$here/login.sh" sandbox
+else
+  echo "Local run: using your own thoryn session (thoryn login --workspace $THORYN_WORKSPACE)."
+fi
 thoryn provision plan --file .thoryn/provision.yaml
 thoryn provision apply --file .thoryn/provision.yaml --yes
 

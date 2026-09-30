@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// Resolve the values this application needs to talk to Thoryn — AT RUN TIME, never rendered into the repo.
+// Resolve the values this application needs to talk to Thoryn — AT RUN TIME, never written into the repo.
 //
-//   OIDC_ISSUER        the issuer of the sandbox environment named in .thoryn/connection.json
+//   OIDC_ISSUER        the issuer of the sandbox environment THORYN_ENVIRONMENT of workspace THORYN_WORKSPACE
 //   OIDC_CLIENT_ID     the clientId of the application `thoryn provision apply` converged (from its receipt)
 //   THORYN_WORKSPACE   the workspace slug (for the e2e's test-inbox reads)
 //   THORYN_ENVIRONMENT the environment slug (idem)
+//
+// Inputs, all from the environment (GitHub Actions variables in CI; exported locally) or the flags below:
+//   THORYN_ISSUER (--issuer), THORYN_WORKSPACE (--workspace), THORYN_ENVIRONMENT (--environment).
 //
 // Why at run time: the issuer changes when the workspace activates a custom domain, and the client id is
 // whatever the provisioning converged. Keeping both out of the repository means a later custom domain or a
@@ -20,7 +23,7 @@
 //   node .thoryn/app-env.mjs                 # print KEY=value lines
 //   node .thoryn/app-env.mjs --write .env    # write them to .env (the one-command local run reads it)
 //   node .thoryn/app-env.mjs --github-env    # append them to $GITHUB_ENV (CI)
-//   options: --connection <path> --receipt <path> --application <name>
+//   options: --issuer <url> --workspace <slug> --environment <slug> --receipt <path> --application <name>
 
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -68,26 +71,29 @@ export async function discoverIssuer(composed, fetchImpl = fetch) {
   } catch (e) {
     throw new AppEnvError(`could not reach ${url}: ${e?.message ?? e}`);
   }
-  if (!resp.ok) throw new AppEnvError(`${url} answered HTTP ${resp.status} — check the workspace and environment in .thoryn/connection.json`);
+  if (!resp.ok) throw new AppEnvError(`${url} answered HTTP ${resp.status} — check THORYN_WORKSPACE and THORYN_ENVIRONMENT`);
   const doc = await resp.json().catch(() => null);
   if (typeof doc?.issuer !== "string" || !doc.issuer) throw new AppEnvError(`${url} did not return an issuer`);
   return doc.issuer.replace(/\/+$/, "");
 }
 
-export async function resolveAppEnv({ connection, receipt, platformIssuer, application, fetchImpl = fetch }) {
-  const workspace = connection?.workspace?.slug;
-  if (!workspace) throw new AppEnvError("connection.json has no workspace.slug");
-  const environment = connection?.auth?.environment ?? null;
+const SLUG = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+export async function resolveAppEnv({ workspace, environment, receipt, platformIssuer, application, fetchImpl = fetch }) {
   if (!platformIssuer) {
     throw new AppEnvError("set THORYN_ISSUER to the platform base issuer (e.g. https://auth.stg.thoryn.org), as for `thoryn login`");
   }
+  if (!workspace) throw new AppEnvError("set THORYN_WORKSPACE to the workspace slug (a GitHub Actions variable in CI)");
+  if (!SLUG.test(workspace)) throw new AppEnvError(`THORYN_WORKSPACE ${JSON.stringify(workspace)} is not a workspace slug`);
+  if (!environment) throw new AppEnvError("set THORYN_ENVIRONMENT to the sandbox slug (a GitHub Actions variable in CI)");
+  if (!SLUG.test(environment)) throw new AppEnvError(`THORYN_ENVIRONMENT ${JSON.stringify(environment)} is not an environment slug`);
   const composed = composeIssuer(platformIssuer, workspace, environment);
   const issuer = await discoverIssuer(composed, fetchImpl);
   return {
     OIDC_ISSUER: issuer,
     OIDC_CLIENT_ID: clientIdFromReceipt(receipt, application),
     THORYN_WORKSPACE: workspace,
-    ...(environment ? { THORYN_ENVIRONMENT: environment } : {}),
+    THORYN_ENVIRONMENT: environment,
   };
 }
 
@@ -96,23 +102,32 @@ export function toDotenv(vars) {
 }
 
 async function main(argv) {
-  const opt = { connection: join(here, "connection.json"), receipt: join(here, "provision.receipt.json"), application: "web" };
+  const opt = {
+    issuer: process.env.THORYN_ISSUER ?? process.env.THORYN_HUB,
+    workspace: process.env.THORYN_WORKSPACE,
+    environment: process.env.THORYN_ENVIRONMENT,
+    receipt: join(here, "provision.receipt.json"),
+    application: "web",
+  };
   let mode = "print";
   let writePath;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--write") { mode = "write"; writePath = argv[++i]; }
     else if (a === "--github-env") mode = "github";
-    else if (a === "--connection") opt.connection = argv[++i];
+    else if (a === "--issuer") opt.issuer = argv[++i];
+    else if (a === "--workspace") opt.workspace = argv[++i];
+    else if (a === "--environment") opt.environment = argv[++i];
     else if (a === "--receipt") opt.receipt = argv[++i];
     else if (a === "--application") opt.application = argv[++i];
     else throw new AppEnvError(`unknown argument ${a}`);
   }
   if (!existsSync(opt.receipt)) throw new AppEnvError(`${opt.receipt} not found — run \`thoryn provision apply --file .thoryn/provision.yaml\` first`);
   const vars = await resolveAppEnv({
-    connection: JSON.parse(readFileSync(opt.connection, "utf8")),
+    workspace: opt.workspace,
+    environment: opt.environment,
     receipt: JSON.parse(readFileSync(opt.receipt, "utf8")),
-    platformIssuer: process.env.THORYN_ISSUER ?? process.env.THORYN_HUB,
+    platformIssuer: opt.issuer,
     application: opt.application,
   });
   const text = toDotenv(vars);

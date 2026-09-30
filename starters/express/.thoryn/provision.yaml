@@ -4,15 +4,20 @@
 # and all workspace-wide sign-in configuration (login methods, branding, email, custom domain) belong to the
 # workspace's CONFIG project, never to an application.
 #
-# No secrets here: the test user's email and password come from the environment at apply time
-# (`{{env.NAME}}` and `passwordEnv`). CI creates a fresh user per run and deletes it afterwards.
+# Nothing here is specific to one repository: the `thoryn` CLI fills in every `{{env.NAME}}` from the
+# environment when it reads the file.
+#   THORYN_ENVIRONMENT        the sandbox (a GitHub Actions variable in CI; export it locally)
+#   THORYN_APP_NAME           the client's display name, its converge key in the sandbox; .thoryn/ci/provision.sh
+#                             defaults it to the repository name
+#   THORYN_TEST_USER_EMAIL    the test user; CI creates a fresh one per run and deletes it afterwards
+#   THORYN_TEST_USER_PASSWORD (read through `passwordEnv`, never written anywhere)
 apiVersion: thoryn.io/provision/v1
 resources:
   - kind: application
     name: web
-    environment: "{{thoryn.environment}}"
+    environment: "{{env.THORYN_ENVIRONMENT}}"
     spec:
-      displayName: "{{thoryn.appName}}"
+      displayName: "{{env.THORYN_APP_NAME}}"
       clientType: public                  # server-side app, but no secret to store: PKCE proves the client
       grantTypes: ["authorization_code"]
       scopes: ["openid", "profile", "email"]
@@ -22,7 +27,7 @@ resources:
 
   - kind: user
     name: test-user
-    environment: "{{thoryn.environment}}"
+    environment: "{{env.THORYN_ENVIRONMENT}}"
     spec:
       email: "{{env.THORYN_TEST_USER_EMAIL}}"
       passwordEnv: THORYN_TEST_USER_PASSWORD

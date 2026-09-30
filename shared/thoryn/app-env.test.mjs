@@ -20,7 +20,7 @@ test("clientIdFromReceipt reads the named application and explains a missing one
   assert.throws(() => clientIdFromReceipt({}, "web"), AppEnvError);
 });
 
-const connection = { workspace: { slug: "acme" }, auth: { method: "workload_identity", environment: "dev" } };
+const where = { workspace: "acme", environment: "dev" };
 const receipt = { resources: [{ kind: "application", name: "web", id: "app-123" }] };
 
 test("resolveAppEnv uses the issuer the discovery document publishes (a custom domain wins)", async () => {
@@ -29,7 +29,7 @@ test("resolveAppEnv uses the issuer the discovery document publishes (a custom d
     seen.push(url);
     return new Response(JSON.stringify({ issuer: "https://login.acme.com/dev" }), { status: 200 });
   };
-  const vars = await resolveAppEnv({ connection, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl });
+  const vars = await resolveAppEnv({ ...where, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl });
   assert.deepEqual(seen, ["https://acme.auth.stg.thoryn.org/dev/.well-known/openid-configuration"]);
   assert.deepEqual(vars, {
     OIDC_ISSUER: "https://login.acme.com/dev",
@@ -41,10 +41,18 @@ test("resolveAppEnv uses the issuer the discovery document publishes (a custom d
 });
 
 test("resolveAppEnv fails clearly without THORYN_ISSUER or when discovery is not served", async () => {
-  await assert.rejects(resolveAppEnv({ connection, receipt, platformIssuer: undefined, application: "web" }), /THORYN_ISSUER/);
+  await assert.rejects(resolveAppEnv({ ...where, receipt, platformIssuer: undefined, application: "web" }), /THORYN_ISSUER/);
   const notFound = async () => new Response("", { status: 404 });
   await assert.rejects(
-    resolveAppEnv({ connection, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: notFound }),
+    resolveAppEnv({ ...where, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: notFound }),
     /HTTP 404/,
   );
+});
+
+test("resolveAppEnv names THORYN_WORKSPACE / THORYN_ENVIRONMENT when they are missing or not slugs", async () => {
+  const base = { receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: async () => assert.fail("no fetch expected") };
+  await assert.rejects(resolveAppEnv({ ...base, environment: "dev" }), /set THORYN_WORKSPACE/);
+  await assert.rejects(resolveAppEnv({ ...base, workspace: "acme" }), /set THORYN_ENVIRONMENT/);
+  await assert.rejects(resolveAppEnv({ ...base, workspace: "Acme/x", environment: "dev" }), /THORYN_WORKSPACE .* is not a workspace slug/);
+  await assert.rejects(resolveAppEnv({ ...base, workspace: "acme", environment: "../prod" }), /THORYN_ENVIRONMENT .* is not an environment slug/);
 });

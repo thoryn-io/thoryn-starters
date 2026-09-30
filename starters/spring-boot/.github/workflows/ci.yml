@@ -1,8 +1,14 @@
 # Build, test, provision the sandbox and run the sign-in journey — with no stored secret.
 #
 # The Thoryn jobs sign in with WORKLOAD IDENTITY: GitHub gives each job a short-lived OIDC token, and the
-# workspace's trust for this repository exchanges it for a Thoryn token (`.thoryn/connection.json`).
-# Repository variable: THORYN_ISSUER (the platform base issuer, e.g. https://auth.stg.thoryn.org).
+# workspace's trust for this repository exchanges it for a Thoryn token (connection `sandbox` in
+# .thoryn/template.json). Nothing in this repository names the workspace: the wiring is four repository
+# variables (Settings → Secrets and variables → Actions → Variables), read at run time:
+#   THORYN_ISSUER         the platform base issuer, e.g. https://auth.stg.thoryn.org
+#   THORYN_WORKSPACE      the workspace
+#   THORYN_ENVIRONMENT    the sandbox the app's client and test user live in
+#   THORYN_WIF_CLIENT_ID  the workload identity trust's clientId (wi_…)
+# A missing variable fails the run and names it.
 name: CI
 
 on:
@@ -36,21 +42,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: check
         env:
-          THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+          IS_TEMPLATE: ${{ github.event.repository.is_template == true }}
           FORK: ${{ github.event.pull_request.head.repo.fork == true }}
-        run: |
-          if [ -f .thoryn/template.json ]; then
-            echo "::notice::This is the unrendered starter template; the Thoryn jobs run once the repository is created from it."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          elif [ -z "$THORYN_ISSUER" ]; then
-            echo "::notice::Set the THORYN_ISSUER repository variable to run the Thoryn jobs."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          elif [ "$FORK" = "true" ]; then
-            echo "::notice::Pull requests from forks get no GitHub OIDC token; the Thoryn jobs are skipped."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
+          FIRST_PUSH: ${{ github.event_name == 'push' && github.run_number == 1 }}
+          THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+          THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+          THORYN_ENVIRONMENT: ${{ vars.THORYN_ENVIRONMENT }}
+          THORYN_WIF_CLIENT_ID: ${{ vars.THORYN_WIF_CLIENT_ID }}
+        run: .thoryn/ci/gate.sh THORYN_ISSUER THORYN_WORKSPACE THORYN_ENVIRONMENT THORYN_WIF_CLIENT_ID
 
   e2e:
     name: Provision sandbox + sign-in e2e
@@ -66,6 +65,9 @@ jobs:
       cancel-in-progress: false
     env:
       THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+      THORYN_ENVIRONMENT: ${{ vars.THORYN_ENVIRONMENT }}
+      THORYN_WIF_CLIENT_ID: ${{ vars.THORYN_WIF_CLIENT_ID }}
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
       GH_TOKEN: ${{ github.token }}
     steps:
