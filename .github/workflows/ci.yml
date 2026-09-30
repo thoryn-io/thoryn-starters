@@ -62,3 +62,30 @@ jobs:
     with:
       stack: express
       wif-client-id: ${{ vars.THORYN_STARTERS_WIF_EXPRESS }}
+
+  spring-boot:
+    name: spring-boot — build and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starters/spring-boot
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: starters/spring-boot/pom.xml
+      - run: ./mvnw -B verify
+
+  spring-boot-e2e:
+    name: spring-boot — staging e2e
+    needs: [tooling, spring-boot]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stack-e2e.yml
+    with:
+      stack: spring-boot
+      wif-client-id: ${{ vars.THORYN_STARTERS_WIF_SPRING_BOOT }}

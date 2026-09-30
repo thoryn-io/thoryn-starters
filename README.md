@@ -31,6 +31,7 @@ change in any application repository.
 | Starter | Kind | Stack | Template repository |
 |---|---|---|---|
 | [`starters/express`](starters/express) | application | Node 22+ / Express 5 / openid-client + jose | `thoryn-io/starter-express` |
+| [`starters/spring-boot`](starters/spring-boot) | application | Java 21 / Spring Boot 4.1 / Spring Security 7.1 | `thoryn-io/starter-spring-boot` |
 
 Every application starter implements the same contract, so one Playwright journey (`shared/e2e`) tests them
 all:

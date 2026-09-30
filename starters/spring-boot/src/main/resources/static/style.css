@@ -1,0 +1,9 @@
+body { font: 16px/1.5 system-ui, sans-serif; color: #1a1a2e; margin: 0; }
+main { max-width: 44rem; margin: 3rem auto; padding: 0 1.25rem; }
+h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+a.button, button { display: inline-block; background: #3d5afe; color: #fff; border: 0; padding: .6rem 1rem; border-radius: 8px; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; border-bottom: 1px solid #e6e6ef; padding: .35rem .5rem; vertical-align: top; }
+pre { background: #f4f4fa; padding: .75rem; border-radius: 6px; overflow-x: auto; }
+.ok { color: #0a7d33; } .error { color: #b00020; }
+form { margin-top: 1.5rem; }
