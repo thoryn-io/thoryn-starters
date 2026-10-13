@@ -86,3 +86,63 @@ test("resolveWiring keeps given values and asks the session only for what is mis
   assert.equal(asked, 1);
   assert.deepEqual(resolveWiring({}, () => null), { THORYN_ISSUER: undefined, THORYN_WORKSPACE: undefined, THORYN_ENVIRONMENT: undefined });
 });
+
+// SSO-3666 — production mode: the client id comes from the variable the config project published, the issuer
+// is the workspace's own (no environment path), and the sandbox mode above is untouched.
+import { MODES, PRODUCTION_CLIENT_ID_VARIABLE, resolveProductionAppEnv, selectMode } from "./app-env.mjs";
+
+test("resolveProductionAppEnv composes the WORKSPACE issuer with no environment path and takes the client id from the variable", async () => {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    seen.push(url);
+    return new Response(JSON.stringify({ issuer: "https://login.acme.com/" }), { status: 200 });
+  };
+  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", fetchImpl });
+  assert.deepEqual(seen, ["https://acme.auth.stg.thoryn.org/.well-known/openid-configuration"]);
+  assert.deepEqual(vars, {
+    OIDC_ISSUER: "https://login.acme.com",
+    OIDC_CLIENT_ID: "app-prod-9",
+    THORYN_WORKSPACE: "acme",
+  });
+  assert.equal("THORYN_ENVIRONMENT" in vars, false, "production has no environment slug");
+  assert.equal(toDotenv(vars), "OIDC_ISSUER=https://login.acme.com\nOIDC_CLIENT_ID=app-prod-9\nTHORYN_WORKSPACE=acme\n");
+});
+
+test("resolveProductionAppEnv never reads a receipt: a receipt naming another client changes nothing", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({ issuer: "https://acme.auth.stg.thoryn.org" }), { status: 200 });
+  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", receipt, fetchImpl });
+  assert.equal(vars.OIDC_CLIENT_ID, "app-prod-9");
+});
+
+test("resolveProductionAppEnv fails naming THORYN_PRODUCTION_CLIENT_ID when it is missing or not a client id, before any fetch", async () => {
+  const noFetch = async () => assert.fail("no fetch expected");
+  const base = { workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", fetchImpl: noFetch };
+  assert.equal(PRODUCTION_CLIENT_ID_VARIABLE, "THORYN_PRODUCTION_CLIENT_ID");
+  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: undefined }), /set THORYN_PRODUCTION_CLIENT_ID .*GitHub environment "production".*production-client-from-the-config-project/);
+  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: "" }), /set THORYN_PRODUCTION_CLIENT_ID/);
+  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: "app-1\nOIDC_ISSUER=https://evil" }), /THORYN_PRODUCTION_CLIENT_ID .* contains whitespace/);
+});
+
+test("resolveProductionAppEnv checks the workspace like the sandbox mode, and its discovery error points at THORYN_WORKSPACE only", async () => {
+  const noFetch = async () => assert.fail("no fetch expected");
+  await assert.rejects(resolveProductionAppEnv({ workspace: "acme", platformIssuer: undefined, clientId: "app-1", fetchImpl: noFetch }), /THORYN_ISSUER/);
+  await assert.rejects(resolveProductionAppEnv({ workspace: undefined, platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: noFetch }), /set THORYN_WORKSPACE/);
+  await assert.rejects(resolveProductionAppEnv({ workspace: "Acme/x", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: noFetch }), /is not a workspace slug/);
+  const notFound = async () => new Response("", { status: 404 });
+  await assert.rejects(
+    resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: notFound }),
+    (e) => e instanceof AppEnvError && /HTTP 404 — check THORYN_WORKSPACE$/.test(e.message),
+  );
+});
+
+test("selectMode: asked for wins; otherwise production only when the production id is set and no sandbox is", () => {
+  assert.deepEqual(MODES, ["sandbox", "production"]);
+  assert.equal(selectMode({ mode: "production", productionClientId: undefined, environment: "dev" }), "production");
+  assert.equal(selectMode({ mode: "sandbox", productionClientId: "app-1", environment: undefined }), "sandbox");
+  assert.equal(selectMode({ productionClientId: "app-1", environment: undefined }), "production");
+  assert.equal(selectMode({ productionClientId: "app-1", environment: "" }), "production");
+  // Both set: a sandbox run, as before this mode existed.
+  assert.equal(selectMode({ productionClientId: "app-1", environment: "dev" }), "sandbox");
+  assert.equal(selectMode({}), "sandbox");
+  assert.throws(() => selectMode({ mode: "staging" }), /--mode must be one of sandbox, production/);
+});

@@ -1,13 +1,23 @@
 #!/usr/bin/env node
 // Resolve the values this application needs to talk to Thoryn — AT RUN TIME, never written into the repo.
 //
+// Two modes. SANDBOX (the default; CI's e2e and every local run):
 //   OIDC_ISSUER        the issuer of the sandbox environment THORYN_ENVIRONMENT of workspace THORYN_WORKSPACE
 //   OIDC_CLIENT_ID     the clientId of the application `thoryn provision apply` converged (from its receipt)
 //   THORYN_WORKSPACE   the workspace slug (for the e2e's test-inbox reads)
 //   THORYN_ENVIRONMENT the environment slug (idem)
+// PRODUCTION (`--production`, or implied when THORYN_PRODUCTION_CLIENT_ID is set and THORYN_ENVIRONMENT is
+// not; the production deploy job, .github/workflows/deploy.yml):
+//   OIDC_ISSUER        the issuer of workspace THORYN_WORKSPACE itself — NO environment path
+//   OIDC_CLIENT_ID     THORYN_PRODUCTION_CLIENT_ID, the production client the workspace's CONFIG project
+//                      declared and published into this repository's GitHub environment `production`
+//                      (https://thoryn.org/docs/guides/production-client-from-the-config-project). This
+//                      repository never converges production, so there is no production receipt to read.
+//   THORYN_WORKSPACE   the workspace slug
 //
 // Inputs, from the environment (GitHub Actions variables in CI; exported locally) or the flags below:
-//   THORYN_ISSUER (--issuer), THORYN_WORKSPACE (--workspace), THORYN_ENVIRONMENT (--environment).
+//   THORYN_ISSUER (--issuer), THORYN_WORKSPACE (--workspace), THORYN_ENVIRONMENT (--environment),
+//   THORYN_PRODUCTION_CLIENT_ID (production mode only).
 // Locally, whatever is not set falls back to your `thoryn login` session (`thoryn whoami --output json`):
 // the workspace and platform issuer you signed in to, and the environment `thoryn env use` selected. CI
 // never falls back: it passes every value explicitly.
@@ -28,7 +38,9 @@
 //   node .thoryn/app-env.mjs --github-env    # append them to $GITHUB_ENV (CI)
 //   node .thoryn/app-env.mjs --wiring        # print THORYN_ISSUER / THORYN_WORKSPACE / THORYN_ENVIRONMENT only
 //                                            # (what .thoryn/ci/provision.sh uses for a local run)
+//   node .thoryn/app-env.mjs --production    # production mode (see above); combine with --github-env / --write
 //   options: --issuer <url> --workspace <slug> --environment <slug> --receipt <path> --application <name>
+//            --production | --mode <sandbox|production>
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -69,7 +81,7 @@ export function clientIdFromReceipt(receipt, name) {
  * Ask the composed issuer for its discovery document and return the `issuer` it publishes. A path-based
  * sandbox issuer serves its discovery at `<issuer>/.well-known/openid-configuration` (OIDC Discovery §4).
  */
-export async function discoverIssuer(composed, fetchImpl = fetch) {
+export async function discoverIssuer(composed, fetchImpl = fetch, check = "THORYN_WORKSPACE and THORYN_ENVIRONMENT") {
   const url = `${composed}/.well-known/openid-configuration`;
   let resp;
   try {
@@ -77,7 +89,7 @@ export async function discoverIssuer(composed, fetchImpl = fetch) {
   } catch (e) {
     throw new AppEnvError(`could not reach ${url}: ${e?.message ?? e}`);
   }
-  if (!resp.ok) throw new AppEnvError(`${url} answered HTTP ${resp.status} — check THORYN_WORKSPACE and THORYN_ENVIRONMENT`);
+  if (!resp.ok) throw new AppEnvError(`${url} answered HTTP ${resp.status} — check ${check}`);
   const doc = await resp.json().catch(() => null);
   if (typeof doc?.issuer !== "string" || !doc.issuer) throw new AppEnvError(`${url} did not return an issuer`);
   return doc.issuer.replace(/\/+$/, "");
@@ -85,12 +97,17 @@ export async function discoverIssuer(composed, fetchImpl = fetch) {
 
 const SLUG = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
-export async function resolveAppEnv({ workspace, environment, receipt, platformIssuer, application, fetchImpl = fetch }) {
+function requireWorkspace(platformIssuer, workspace) {
   if (!platformIssuer) {
     throw new AppEnvError("set THORYN_ISSUER to the platform base issuer (e.g. https://auth.stg.thoryn.org), or sign in locally with `thoryn login --issuer <url> --workspace <ws>`");
   }
   if (!workspace) throw new AppEnvError("set THORYN_WORKSPACE to the workspace slug (a GitHub Actions variable in CI; locally, or sign in with `thoryn login --workspace <ws>`)");
   if (!SLUG.test(workspace)) throw new AppEnvError(`THORYN_WORKSPACE ${JSON.stringify(workspace)} is not a workspace slug`);
+}
+
+/** Sandbox mode: the environment's issuer, and the client id `thoryn provision apply` converged (its receipt). */
+export async function resolveAppEnv({ workspace, environment, receipt, platformIssuer, application, fetchImpl = fetch }) {
+  requireWorkspace(platformIssuer, workspace);
   if (!environment) throw new AppEnvError("set THORYN_ENVIRONMENT to the sandbox slug (a GitHub Actions variable in CI; locally, export it or pass --environment <sandbox>)");
   if (!SLUG.test(environment)) throw new AppEnvError(`THORYN_ENVIRONMENT ${JSON.stringify(environment)} is not an environment slug`);
   const composed = composeIssuer(platformIssuer, workspace, environment);
@@ -101,6 +118,48 @@ export async function resolveAppEnv({ workspace, environment, receipt, platformI
     THORYN_WORKSPACE: workspace,
     THORYN_ENVIRONMENT: environment,
   };
+}
+
+export const PRODUCTION_CLIENT_ID_VARIABLE = "THORYN_PRODUCTION_CLIENT_ID";
+const GUIDE = "https://thoryn.org/docs/guides/production-client-from-the-config-project";
+
+/**
+ * Production mode: the WORKSPACE issuer (`https://<workspace>.<platform host>`, no environment path — production
+ * is the workspace's own plane), resolved through its discovery document like the sandbox's; and the client id
+ * from THORYN_PRODUCTION_CLIENT_ID, which the workspace's config project published into this repository's
+ * GitHub environment `production` when its production run converged the client. No receipt is read: an
+ * application repository never converges production and has no production identity.
+ */
+export async function resolveProductionAppEnv({ workspace, platformIssuer, clientId, fetchImpl = fetch }) {
+  requireWorkspace(platformIssuer, workspace);
+  if (!clientId) {
+    throw new AppEnvError(
+      `set ${PRODUCTION_CLIENT_ID_VARIABLE} to the production client id the workspace's config project published — a variable of this repository's GitHub environment "production", read only by a job that runs in it (${GUIDE})`,
+    );
+  }
+  if (/\s/.test(clientId)) throw new AppEnvError(`${PRODUCTION_CLIENT_ID_VARIABLE} ${JSON.stringify(clientId)} is not a client id (it contains whitespace)`);
+  const issuer = await discoverIssuer(composeIssuer(platformIssuer, workspace, null), fetchImpl, "THORYN_WORKSPACE");
+  return {
+    OIDC_ISSUER: issuer,
+    OIDC_CLIENT_ID: clientId,
+    THORYN_WORKSPACE: workspace,
+  };
+}
+
+export const MODES = ["sandbox", "production"];
+
+/**
+ * Which mode a run is in: the one asked for (`--production`, `--mode <mode>`), else `production` when
+ * THORYN_PRODUCTION_CLIENT_ID is set and THORYN_ENVIRONMENT is not (the production deploy job's environment),
+ * else `sandbox`. A run with both set is a sandbox run unless it asks otherwise, so an exported sandbox keeps
+ * working on a machine that also knows the production id.
+ */
+export function selectMode({ mode, productionClientId, environment }) {
+  if (mode) {
+    if (!MODES.includes(mode)) throw new AppEnvError(`--mode must be one of ${MODES.join(", ")}, not ${JSON.stringify(mode)}`);
+    return mode;
+  }
+  return productionClientId && !environment ? "production" : "sandbox";
 }
 
 /**
@@ -163,46 +222,56 @@ async function main(argv) {
     environment: process.env.THORYN_ENVIRONMENT,
     receipt: join(here, "provision.receipt.json"),
     application: "web",
+    productionClientId: process.env[PRODUCTION_CLIENT_ID_VARIABLE],
+    mode: undefined,
   };
-  let mode = "print";
+  let output = "print";
   let writePath;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--write") { mode = "write"; writePath = argv[++i]; }
-    else if (a === "--github-env") mode = "github";
-    else if (a === "--wiring") mode = "wiring";
+    if (a === "--write") { output = "write"; writePath = argv[++i]; }
+    else if (a === "--github-env") output = "github";
+    else if (a === "--wiring") output = "wiring";
     else if (a === "--issuer") opt.issuer = argv[++i];
     else if (a === "--workspace") opt.workspace = argv[++i];
     else if (a === "--environment") opt.environment = argv[++i];
     else if (a === "--receipt") opt.receipt = argv[++i];
     else if (a === "--application") opt.application = argv[++i];
+    else if (a === "--production") opt.mode = "production";
+    else if (a === "--mode") opt.mode = argv[++i];
     else throw new AppEnvError(`unknown argument ${a}`);
   }
+  const mode = selectMode(opt);
   // CI passes every value explicitly; a local run may leave them to the `thoryn login` session.
   const local = process.env.GITHUB_ACTIONS !== "true";
   const wiring = local
     ? resolveWiring(opt)
     : { THORYN_ISSUER: opt.issuer, THORYN_WORKSPACE: opt.workspace, THORYN_ENVIRONMENT: opt.environment };
-  if (mode === "wiring") {
+  if (output === "wiring") {
     process.stdout.write(toDotenv(Object.fromEntries(Object.entries(wiring).filter(([, v]) => v))));
     return;
   }
   opt.issuer = wiring.THORYN_ISSUER;
   opt.workspace = wiring.THORYN_WORKSPACE;
   opt.environment = wiring.THORYN_ENVIRONMENT;
-  if (!existsSync(opt.receipt)) throw new AppEnvError(`${opt.receipt} not found — run \`thoryn provision apply --file .thoryn/provision.yaml\` first`);
-  const vars = await resolveAppEnv({
-    workspace: opt.workspace,
-    environment: opt.environment,
-    receipt: JSON.parse(readFileSync(opt.receipt, "utf8")),
-    platformIssuer: opt.issuer,
-    application: opt.application,
-  });
+  let vars;
+  if (mode === "production") {
+    vars = await resolveProductionAppEnv({ workspace: opt.workspace, platformIssuer: opt.issuer, clientId: opt.productionClientId });
+  } else {
+    if (!existsSync(opt.receipt)) throw new AppEnvError(`${opt.receipt} not found — run \`thoryn provision apply --file .thoryn/provision.yaml\` first`);
+    vars = await resolveAppEnv({
+      workspace: opt.workspace,
+      environment: opt.environment,
+      receipt: JSON.parse(readFileSync(opt.receipt, "utf8")),
+      platformIssuer: opt.issuer,
+      application: opt.application,
+    });
+  }
   const text = toDotenv(vars);
-  if (mode === "write") {
+  if (output === "write") {
     writeFileSync(writePath, text);
     console.log(`wrote ${Object.keys(vars).join(", ")} to ${writePath}`);
-  } else if (mode === "github") {
+  } else if (output === "github") {
     if (!process.env.GITHUB_ENV) throw new AppEnvError("--github-env needs $GITHUB_ENV (run it inside GitHub Actions)");
     appendFileSync(process.env.GITHUB_ENV, text);
     console.log(`exported ${Object.entries(vars).map(([k, v]) => `${k}=${v}`).join(" ")}`);

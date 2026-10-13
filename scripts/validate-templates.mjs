@@ -12,8 +12,13 @@
 //    connection names, and its client accepts the app's default local callbacks (SSO-3445); plain-http
 //    redirect URIs are loopback-only and only ever on a sandbox client, never on production; a CONFIG project's production section declares every sandbox, and each sandbox
 //    section converges only its own sandbox;
-//  - the workflows read only declared variables (plus THORYN_CLI_VERSION), read every one of them, request
-//    `id-token: write`, read no secret, and run the shared CI steps.
+//  - the workflows read only declared variables (plus THORYN_CLI_VERSION and, for an application, the
+//    production client id the workspace's config project publishes), read every one of them, request
+//    `id-token: write`, read no secret, and run the shared CI steps;
+//  - an APPLICATION project's production deploy job (SSO-3666) reads vars.THORYN_PRODUCTION_CLIENT_ID in the
+//    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
+//    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
+//    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project).
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -50,8 +55,19 @@ export const VARIABLE_CONTRACT = {
 
 /** `{{env.NAME}}` values a provisioning file may read that are not Actions variables (set per run). */
 const RUNTIME_ENV = new Set(["THORYN_APP_NAME", "THORYN_TEST_USER_EMAIL", "THORYN_TEST_USER_PASSWORD"]);
-/** Optional variables a workflow may read without declaring them. */
-const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION"]);
+/** The variable the production deploy job reads (set by the config project, never by the creation flow). */
+export const PRODUCTION_CLIENT_ID_VARIABLE = "THORYN_PRODUCTION_CLIENT_ID";
+/** The GitHub environment the production deploy job runs in and that variable lives in. */
+export const PRODUCTION_GITHUB_ENVIRONMENT = "production";
+/**
+ * Variables a workflow may read without declaring them: the creation flow does not set them, so they are not
+ * part of the contract template.json declares. THORYN_PRODUCTION_CLIENT_ID is published into the application
+ * repository's GitHub environment `production` by the workspace's CONFIG project when its production run
+ * converges the app's production client (SSO-3666; oauthy ADR 2026-10-13). The manifest schema has no way to
+ * declare a variable another project publishes — a known gap, reported under SSO-3666 — so it is read, not
+ * declared.
+ */
+const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION", PRODUCTION_CLIENT_ID_VARIABLE]);
 const APP_KINDS = new Set(["application", "user"]);
 /** Every application starter listens on 127.0.0.1:8080 by default (PORT / APP_BASE_URL override it). */
 export const LOCAL_PORT = 8080;
@@ -224,6 +240,28 @@ export function checkStarter(dir, schemas) {
     for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
       if (!text.includes(`.thoryn/ci/${step}`)) fail(`the workflow does not run .thoryn/ci/${step}`);
     }
+    // SSO-3666 — the production deploy skeleton: reads the published client id in the `production` GitHub
+    // environment, resolves its settings in production mode, and holds no Thoryn identity.
+    if (!read.has(PRODUCTION_CLIENT_ID_VARIABLE)) fail(`no workflow reads vars.${PRODUCTION_CLIENT_ID_VARIABLE} (the production deploy job)`);
+    if (!text.includes("app-env.mjs --production")) fail("no workflow runs .thoryn/app-env.mjs --production (the production deploy job)");
+    let productionJobs = 0;
+    for (const wf of workflows) {
+      const doc = YAML.parse(readFileSync(join(wfDir, wf), "utf8"));
+      for (const [jobName, job] of Object.entries(doc?.jobs ?? {})) {
+        const environment = typeof job?.environment === "string" ? job.environment : job?.environment?.name;
+        if (environment !== PRODUCTION_GITHUB_ENVIRONMENT) continue;
+        productionJobs++;
+        const permissions = { ...(doc.permissions ?? {}), ...(job.permissions ?? {}) };
+        if (permissions["id-token"] === "write") fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and requests id-token: write; an application repository has no production identity`);
+        for (const step of job.steps ?? []) {
+          const run = typeof step?.run === "string" ? step.run : "";
+          if (/login\.sh|thoryn login|provision\.sh|thoryn provision/.test(run)) {
+            fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and signs in to or provisions Thoryn; production is converged by the config project only`);
+          }
+        }
+      }
+    }
+    if (!productionJobs) fail(`no workflow job runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} (the production deploy job)`);
   }
   // SSO-3445 — the generated local test user (.thoryn/local.env) must never be committed.
   const gitignore = existsSync(join(dir, ".gitignore")) ? readFileSync(join(dir, ".gitignore"), "utf8").split("\n") : [];

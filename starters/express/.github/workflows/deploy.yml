@@ -1,0 +1,72 @@
+# Deploy the app to production — a skeleton for you to complete.
+#
+# This repository is an APPLICATION project: it has no production identity on Thoryn and never converges
+# production. Its production OAuth client is declared in the workspace's CONFIG repository (a reviewed pull
+# request there, then an approved production run), and that project's apply PUBLISHES the client's id into this
+# repository as the Actions variable THORYN_PRODUCTION_CLIENT_ID of the GitHub environment `production`. The job
+# below reads it there, resolves the production issuer from the platform's discovery document
+# (`.thoryn/app-env.mjs --production`) and hands OIDC_ISSUER / OIDC_CLIENT_ID to your deploy step. It signs in to
+# nothing and calls Thoryn for nothing, so it requests no id-token.
+#
+# Variables it reads (none is a secret):
+#   THORYN_ISSUER                 repository variable — the platform base issuer, e.g. https://auth.stg.thoryn.org
+#   THORYN_WORKSPACE              repository variable — the workspace
+#   THORYN_PRODUCTION_CLIENT_ID   variable of the GitHub environment `production` — the app's production client,
+#                                 published by the config project (by hand until then: `gh variable set
+#                                 THORYN_PRODUCTION_CLIENT_ID --env production --body <id>`)
+# Until the client is published the job skips with a notice, so a new repository stays green.
+# Guide: https://thoryn.org/docs/guides/production-client-from-the-config-project
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-production:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    # The GitHub environment that holds THORYN_PRODUCTION_CLIENT_ID; only a job running in it can read the
+    # variable. Add required reviewers to it (Settings → Environments → production) to approve every deploy.
+    environment: production
+    permissions:
+      contents: read # and NOT id-token: write — this job has no Thoryn identity and makes no Thoryn call
+    env:
+      THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
+      THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
+      THORYN_PRODUCTION_CLIENT_ID: ${{ vars.THORYN_PRODUCTION_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - id: gate
+        name: Production client published?
+        run: |
+          if [ -z "$THORYN_PRODUCTION_CLIENT_ID" ]; then
+            echo "::notice::THORYN_PRODUCTION_CLIENT_ID is not set on the GitHub environment 'production': the workspace's config project has not published this app's production client yet, so nothing is deployed. See https://thoryn.org/docs/guides/production-client-from-the-config-project"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Resolve OIDC_ISSUER and OIDC_CLIENT_ID for production
+        if: steps.gate.outputs.ready == 'true'
+        # Composes https://<workspace>.<platform host> (no environment path), fetches its discovery document and
+        # exports the `issuer` it publishes (an active custom domain reaches the app with no commit here) plus
+        # OIDC_CLIENT_ID=$THORYN_PRODUCTION_CLIENT_ID. A missing or malformed variable fails and names it.
+        run: node .thoryn/app-env.mjs --production --github-env
+      - name: Deploy to your platform here
+        if: steps.gate.outputs.ready == 'true'
+        # PLACEHOLDER — replace this step with your deployment (container push, PaaS CLI, Helm, …). OIDC_ISSUER
+        # and OIDC_CLIENT_ID are in the job's environment; pass them to the deployed app the way you pass every
+        # other setting. Nothing is deployed until you do.
+        run: |
+          echo "::warning::deploy.yml: no deployment is configured yet. Replace the 'Deploy to your platform here' step; OIDC_ISSUER=$OIDC_ISSUER and OIDC_CLIENT_ID=$OIDC_CLIENT_ID are ready for it."

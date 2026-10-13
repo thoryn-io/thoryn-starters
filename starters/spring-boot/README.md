@@ -91,7 +91,7 @@ above).
 |---|---|
 | `template.json` | **What this repository needs from Thoryn:** the Actions variables (see [Configuration](#configuration)), and connection `sandbox`, the workload identity trust CI signs in with (its exact scopes and grant). No secret, no workspace name. |
 | `provision.yaml` | **What this app owns:** its OAuth client and its test user, in the sandbox named by `{{env.THORYN_ENVIRONMENT}}` (the CLI fills it in from the environment). Nothing workspace-wide. |
-| `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` after provisioning. |
+| `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` after provisioning (sandbox), or — `--production` — for the production deploy from `THORYN_PRODUCTION_CLIENT_ID` (see [Production](#production)). |
 | `ci/` | The steps the pipeline runs (`gate.sh`, `login.sh` and `require-vars.sh` read and check the variables). |
 
 ## CI
@@ -104,6 +104,9 @@ above).
    OIDC token is exchanged; nothing is stored), `thoryn provision apply` with a fresh test user, start the
    app, run `e2e/` with Playwright (sign in, call the API, sign out, reset the password through the
    sandbox's test inbox), then remove what the run created.
+
+`.github/workflows/deploy.yml` runs on every push to `main`: the production deploy skeleton (see
+[Production](#production)). It skips with a notice until the production client is published.
 
 ## Configuration
 
@@ -129,6 +132,28 @@ To point the app at another sandbox, change `THORYN_ENVIRONMENT` and `THORYN_WIF
 to one sandbox). No file in the repository changes. A local run needs none of these variables; it uses
 your `thoryn login` session (see [Run it locally](#run-it-locally)). In CI, the client's display name is the
 repository's name; set `THORYN_APP_NAME` to override it.
+
+## Production
+
+This repository never gets production access: its CI signs in to a **sandbox** only, and `provision.yaml`
+declares only sandbox resources. The app's **production OAuth client is declared in the workspace's config
+project** (`.thoryn/environments/production/provision.yaml` there, with the deployed `https` redirect URIs),
+where every change is a reviewed pull request plus an approved production run. That project publishes the
+client's id into this repository as the Actions variable `THORYN_PRODUCTION_CLIENT_ID` of the GitHub
+environment `production` (by hand, with `gh variable set … --env production`, until the automated
+`publishTo:` lands). Nothing production-related is committed here. The guide:
+<https://thoryn.org/docs/guides/production-client-from-the-config-project>.
+
+`.github/workflows/deploy.yml` is the production deploy **skeleton**. Its job `deploy-production` runs in
+the GitHub environment `production`, reads `THORYN_PRODUCTION_CLIENT_ID` there, runs
+`node .thoryn/app-env.mjs --production --github-env` — which composes `https://<workspace>.<platform host>`
+(no environment path), fetches its discovery document and exports the `issuer` it publishes as
+`OIDC_ISSUER`, and `OIDC_CLIENT_ID` from the variable — and ends in a placeholder step for your deployment.
+It requests no `id-token` and makes no Thoryn call: the app repository has no production identity. Until the
+variable is set the job skips with a notice; a set but malformed value fails and names it.
+
+Locally, `THORYN_PRODUCTION_CLIENT_ID=<id> node .thoryn/app-env.mjs --production` prints the same values
+(the workspace and platform come from your `thoryn login` session when not exported).
 
 ## Next steps
 
