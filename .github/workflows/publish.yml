@@ -1,9 +1,11 @@
 # Mirror every starter to its template repository (thoryn-io/starter-<name>) once CI is green on main.
 # The starter-project flow generates customer repositories from those template repositories.
 #
-# Needs a GitHub App installed on the template repositories with Contents: read & write:
+# Needs a GitHub App installed on the four template repositories with Contents + Workflows: read & write:
 #   repository variable STARTERS_PUBLISH_APP_ID, repository secret STARTERS_PUBLISH_APP_PRIVATE_KEY.
-# Without them the job skips with a notice. See docs/publishing.md.
+# SSO-3675: without them a run for main FAILS (it used to skip with a notice and stay green while the
+# template repositories sat empty). After each mirror the job verifies, from a fresh clone, that the
+# template repository holds exactly the starter's files and is marked as a template. See docs/publishing.md.
 name: Publish templates
 
 on:
@@ -22,40 +24,46 @@ concurrency:
 
 jobs:
   plan:
-    name: Which starters
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    name: Publisher configured
+    # A fork of this repository cannot hold the publish App (it is installed on thoryn-io's template
+    # repositories, and its key is this repository's secret), so in a fork every job is skipped — visibly,
+    # as "skipped", never as a green publish. Everywhere else a run for main must publish or fail.
+    if: >-
+      !github.event.repository.fork &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     outputs:
-      starters: ${{ steps.list.outputs.starters }}
-      ready: ${{ steps.list.outputs.ready }}
-      sha: ${{ steps.list.outputs.sha }}
+      sha: ${{ steps.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - id: list
+      - id: plan
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: The publisher must be configured (variable + secret), or this run fails
         env:
           APP_ID: ${{ vars.STARTERS_PUBLISH_APP_ID }}
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-        run: |
-          echo "starters=$(find starters -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          if [ -z "$APP_ID" ]; then
-            echo "::notice::Publishing skipped: set STARTERS_PUBLISH_APP_ID and STARTERS_PUBLISH_APP_PRIVATE_KEY (docs/publishing.md)."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
+          # Only whether the secret is present reaches the script; its value never does.
+          HAS_PRIVATE_KEY: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY != '' }}
+        run: scripts/publish/gate.sh
 
   publish:
     name: Publish ${{ matrix.starter }}
     needs: plan
-    if: needs.plan.outputs.ready == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        starter: ${{ fromJSON(needs.plan.outputs.starters) }}
+        # Every directory under starters/, by name. `npm run check` (scripts/validate-templates.mjs) fails
+        # when this list and starters/* differ, so a starter cannot exist without being published.
+        starter: [aspnet-core, config, express, spring-boot]
+    env:
+      STARTER: ${{ matrix.starter }}
+      TARGET: ${{ github.repository_owner }}/starter-${{ matrix.starter }}
+      SHA: ${{ needs.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,23 +77,17 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: starter-${{ matrix.starter }}
       - name: Mirror starters/${{ matrix.starter }} to ${{ github.repository_owner }}/starter-${{ matrix.starter }}
+        id: mirror
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-          STARTER: ${{ matrix.starter }}
-          OWNER: ${{ github.repository_owner }}
-          SHA: ${{ needs.plan.outputs.sha }}
-        run: |
-          set -euo pipefail
-          target="$OWNER/starter-$STARTER"
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${target}.git" target
-          rsync -a --delete --exclude .git --exclude node_modules "source/starters/$STARTER/" target/
-          cd target
-          git add -A
-          if git diff --cached --quiet; then
-            echo "$target is already up to date."
-            exit 0
-          fi
-          git -c user.name="thoryn-starters publish" -c user.email="noreply@thoryn.io" \
-            commit -q -m "Publish from thoryn-io/thoryn-starters@${SHA}"
-          git push -q origin HEAD
-          echo "::notice::Published $target from ${SHA}."
+        run: source/scripts/publish/mirror.sh "source/starters/$STARTER" "$TARGET"
+      - name: Verify the published tree from a fresh clone (non-empty, equals the starter, at the pushed commit)
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          BRANCH: ${{ steps.mirror.outputs.branch }}
+          COMMIT: ${{ steps.mirror.outputs.commit }}
+        run: source/scripts/publish/verify-published.sh "source/starters/$STARTER" "$TARGET" "$BRANCH" "$COMMIT"
+      - name: Verify the repository is a GitHub template (the starter flow generates from it)
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: source/scripts/publish/assert-template-repo.sh "$TARGET"

@@ -18,7 +18,9 @@
 //  - an APPLICATION project's production deploy job (SSO-3666) reads vars.THORYN_PRODUCTION_CLIENT_ID in the
 //    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
 //    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
-//    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project).
+//    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project);
+//  - SSO-3675: the publish matrix in .github/workflows/publish.yml names exactly the directories under
+//    starters/, so a starter cannot be added (or renamed) without being published to its template repository.
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -270,6 +272,34 @@ export function checkStarter(dir, schemas) {
   return problems;
 }
 
+/** The workflow that mirrors the starters to their template repositories, relative to the repository root. */
+export const PUBLISH_WORKFLOW = ".github/workflows/publish.yml";
+
+/**
+ * SSO-3675 — the set of starters/* must equal the publish matrix (`jobs.publish.strategy.matrix.starter` in
+ * publish.yml). The matrix is a literal list on purpose: a reviewed declaration of what gets published,
+ * checked here against the directories, rather than a `find` at publish time that nobody reads. Returns a
+ * list of problems (empty ⇒ in sync).
+ */
+export function checkPublishMatrix(repoRoot) {
+  const workflowPath = join(repoRoot, PUBLISH_WORKFLOW);
+  if (!existsSync(workflowPath)) return [`${PUBLISH_WORKFLOW} is missing: nothing publishes the starters`];
+  const doc = YAML.parse(readFileSync(workflowPath, "utf8"));
+  const matrix = doc?.jobs?.publish?.strategy?.matrix?.starter;
+  if (!Array.isArray(matrix) || !matrix.every((s) => typeof s === "string")) {
+    return [`${PUBLISH_WORKFLOW}: jobs.publish.strategy.matrix.starter must be a literal list of starter names`];
+  }
+  const startersDir = join(repoRoot, "starters");
+  const starters = existsSync(startersDir) ? readdirSync(startersDir).filter((n) => statSync(join(startersDir, n)).isDirectory()).sort() : [];
+  const problems = [];
+  if (!starters.length) problems.push("starters/ has no starter directory");
+  for (const s of starters) if (!matrix.includes(s)) problems.push(`starters/${s} is not in the publish matrix of ${PUBLISH_WORKFLOW}; add it or it is never published`);
+  for (const s of matrix) if (!starters.includes(s)) problems.push(`${PUBLISH_WORKFLOW} publishes "${s}", but starters/${s} does not exist`);
+  const dupes = matrix.filter((s, i) => matrix.indexOf(s) !== i);
+  for (const s of new Set(dupes)) problems.push(`${PUBLISH_WORKFLOW} lists "${s}" twice in the publish matrix`);
+  return problems;
+}
+
 export function compileSchemas() {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   const load = (f) => JSON.parse(readFileSync(join(root, "schemas", f), "utf8"));
@@ -288,6 +318,9 @@ function main() {
     for (const p of found) problems.push(`${starter}: ${p}`);
     if (!found.length) console.log(`✔ ${starter} validates as is (${JSON.parse(readFileSync(join(root, "starters", starter, ".thoryn/template.json"), "utf8")).kind})`);
   }
+  const matrixProblems = checkPublishMatrix(root);
+  problems.push(...matrixProblems);
+  if (!matrixProblems.length) console.log(`✔ ${PUBLISH_WORKFLOW} publishes exactly the starters/* directories`);
   if (problems.length) {
     console.error(`\n✖ ${problems.length} problem(s):\n  ${problems.join("\n  ")}`);
     process.exit(1);
