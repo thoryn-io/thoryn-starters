@@ -19,7 +19,7 @@ A workspace is configured by **one config project** and used by **many applicati
 | Contains | Configuration only, no app code | An app (Spring Boot, ASP.NET Core, Express) |
 | `.thoryn/provision.yaml` declares | Workspace-wide configuration: environments, federation members / IdPs, login methods, login flows, branding, email provider, custom domain. Production and every sandbox are sections. | Only its own OAuth application client(s) and its own sandbox test users. No environment, no workspace configuration. |
 | Sign-in (`connections` in `.thoryn/template.json`) | One per environment section. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | One: the sandbox the app runs against. |
-| CI | `thoryn provision plan` on pull requests, `apply` on `main`, per environment. | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. |
+| CI | `thoryn provision plan` on pull requests, `apply` on `main`, per environment. | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
 | End result | A working sign-in stack, on the customer's own domain once one is configured. | A running app that signs users in and protects its API. |
 
 No project hard-codes its workspace, its environment or its issuer. The Actions variables name the
@@ -121,6 +121,20 @@ Its grant is `manager` on the sandbox. The client's display name is its converge
 it is the repository's name; a local run uses `<repository>-local-<user>`, so a CI run's teardown never
 deletes a developer's client. `THORYN_APP_NAME` overrides both. It is not an Actions variable.
 
+**One variable the creation flow does not set: `THORYN_PRODUCTION_CLIENT_ID`** (SSO-3666; oauthy ADR
+2026-10-13, production clients declared in the config project). An application's production OAuth client is
+declared in the workspace's **config** project and converged by its reviewed production run; that run
+publishes the client's id into the application repository as a variable of the GitHub environment
+`production`. The application's `deploy.yml` reads it there and resolves its settings with
+`app-env.mjs --production` (workspace issuer, no environment path; client id from the variable). It is **not**
+declared in `template.json`: the declaration lists what the creation flow sets, and the orchestrator refuses
+an application declaration that is not exactly the four variables above — the manifest has no way yet to
+mark a variable another project publishes (a recorded gap). `npm run check` therefore lets a workflow read
+`vars.THORYN_PRODUCTION_CLIENT_ID` undeclared (like `THORYN_CLI_VERSION`), requires the application starters
+to do so, and refuses a job in the `production` GitHub environment that requests `id-token: write` or signs in
+to Thoryn: the app repository has no production identity. Guide:
+<https://thoryn.org/docs/guides/production-client-from-the-config-project>.
+
 ### Config project
 
 | Variable | Level | Meaning |
@@ -181,7 +195,8 @@ are developed and tested. `.github/workflows/publish.yml` mirrors `starters/<nam
 
 - **tooling**: unit tests (CI scripts, `app-env.mjs`, the validator, test-inbox), `shared/` drift check,
   every starter validated as is (no placeholder, declaration against `schemas/template.schema.json` and the
-  variable contract, provisioning files against the CLI's schema), actionlint.
+  variable contract, provisioning files against the CLI's schema, the production deploy skeleton's
+  no-identity shape), actionlint.
 - **per starter**: build and unit tests.
 - **per starter, staging e2e** (`stack-e2e.yml`): run the starter's own `.thoryn/ci` steps in place, with the
   staging fixture supplied as the same `THORYN_*` environment a generated repository's workflow maps from

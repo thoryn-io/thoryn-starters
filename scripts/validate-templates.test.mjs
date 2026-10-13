@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLACEHOLDER_TOKEN, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
+import { rmSync } from "node:fs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const schemas = compileSchemas();
@@ -104,4 +105,34 @@ test("every starter's .gitignore keeps the generated local test user out of git"
   const dir = copy("aspnet-core");
   edit(dir, ".gitignore", (t) => t.replace(".thoryn/local.env", ""));
   assert.match(checkStarter(dir, schemas).join("\n"), /\.gitignore must list \.thoryn\/local\.env/);
+});
+
+// SSO-3666 — the production deploy skeleton of an application starter.
+test("an application starter must read the published production client id and resolve its settings in production mode", () => {
+  const dir = copy("express");
+  rmSync(join(dir, ".github/workflows/deploy.yml"));
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /no workflow reads vars\.THORYN_PRODUCTION_CLIENT_ID/);
+  assert.match(problems, /no workflow runs \.thoryn\/app-env\.mjs --production/);
+  assert.match(problems, /no workflow job runs in GitHub environment production/);
+});
+
+test("the production deploy job holds no Thoryn identity: no id-token: write, no sign-in, no provisioning", () => {
+  const dir = copy("spring-boot");
+  edit(dir, ".github/workflows/deploy.yml", (t) => t.replace("    permissions:\n      contents: read", "    permissions:\n      contents: read\n      id-token: write"));
+  assert.match(checkStarter(dir, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and requests id-token: write/);
+
+  const dir2 = copy("aspnet-core");
+  edit(dir2, ".github/workflows/deploy.yml", (t) => t.replace("        run: node .thoryn/app-env.mjs --production --github-env", "        run: |\n          .thoryn/ci/login.sh sandbox\n          node .thoryn/app-env.mjs --production --github-env"));
+  assert.match(checkStarter(dir2, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and signs in to or provisions Thoryn/);
+});
+
+test("the published production client id is read without being declared: the creation flow does not set it", () => {
+  const dir = copy("express");
+  // Declaring it would make the orchestrator refuse the template (fixed contract); the validator says so.
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.variables.THORYN_PRODUCTION_CLIENT_ID = { level: "environment", environment: "production", description: "x" };
+    return m;
+  });
+  assert.match(checkStarter(dir, schemas).join("\n"), /declares THORYN_PRODUCTION_CLIENT_ID, which is not in the application contract/);
 });
