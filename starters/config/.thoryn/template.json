@@ -38,7 +38,8 @@
         "tenant:environments.read",
         "tenant:environments.write",
         "tenant:idp.read",
-        "tenant:idp.write"
+        "tenant:idp.write",
+        "tenant:access.read"
       ],
       "grant": { "relation": "manager", "on": "workspace" }
     },
@@ -50,8 +51,10 @@
       "provisionFile": ".thoryn/environments/sandbox/provision.yaml",
       "scopes": [
         "tenant:environments.read",
+        "tenant:environments.write",
         "tenant:idp.read",
-        "tenant:idp.write"
+        "tenant:idp.write",
+        "tenant:access.read"
       ],
       "grant": { "relation": "manager", "on": "environment" }
     }

@@ -50,7 +50,7 @@ test("login.sh signs in as the connection: its client id variable, the composed 
     "--workspace", "acme",
     "--client-id", "wi_0123456789abcdef",
     "--audience", "https://acme.auth.stg.thoryn.org/dev",
-    "--scope", "tenant:applications.read tenant:applications.write tenant:users.read tenant:users.write tenant:environments.read",
+    "--scope", "tenant:applications.read tenant:applications.write tenant:users.read tenant:users.write tenant:environments.read tenant:environments.write tenant:access.read",
   ]);
 });
 
@@ -65,7 +65,7 @@ test("login.sh for the config project's production connection has no sandbox in 
   const args = r.args();
   assert.equal(args[args.indexOf("--audience") + 1], "https://acme.auth.stg.thoryn.org");
   assert.equal(args[args.indexOf("--client-id") + 1], "wi_prod");
-  assert.equal(args[args.indexOf("--scope") + 1], "tenant:environments.read tenant:environments.write tenant:idp.read tenant:idp.write");
+  assert.equal(args[args.indexOf("--scope") + 1], "tenant:environments.read tenant:environments.write tenant:idp.read tenant:idp.write tenant:access.read");
 });
 
 test("login.sh names every missing variable, with where to set it, and never calls the CLI", () => {

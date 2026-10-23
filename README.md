@@ -115,7 +115,14 @@ Connection `sandbox` has these scopes:
 
 - `tenant:applications.read`, `tenant:applications.write`;
 - `tenant:users.read`, `tenant:users.write`;
-- `tenant:environments.read`, which reads the sandbox's test inbox.
+- `tenant:environments.read`, which reads the sandbox's test inbox;
+- `tenant:environments.write`, because the provisioning file the App seeds where a repository has none declares
+  the sandbox itself (`retain: true`), and applying a file needs the write scope of every kind it declares;
+- `tenant:access.read`, the ownership check (`POST /api/v1/access/check`) `thoryn provision plan` makes for every
+  declared resource.
+
+Those are the scopes `thoryn provision workflow check` (cli-v0.44.0 and later, rule `config.trust-scopes`) derives
+from the files the creation flow commits, so a generated repository's first plan does not stop on a `403`.
 
 Its grant is `manager` on the sandbox. The client's display name is its converge key in the sandbox. In CI
 it is the repository's name; a local run uses `<repository>-local-<user>`, so a CI run's teardown never
@@ -145,9 +152,12 @@ to Thoryn: the app repository has no production identity. Guide:
 | `THORYN_SANDBOX_WIF_CLIENT_ID` | repository | The sandbox trust's `clientId`. |
 | `THORYN_PRODUCTION_WIF_CLIENT_ID` | environment `thoryn-production` | The production trust's `clientId`; only the production job can read it. |
 
-Connection `production` has `tenant:environments.read/.write` and `tenant:idp.read/.write`. Its grant is
-`manager` on the **workspace**, because creating an environment needs `manager` on its parent. Connection
-`sandbox` has `tenant:environments.read` and `tenant:idp.read/.write`, with `manager` on the sandbox.
+Connection `production` has `tenant:environments.read/.write`, `tenant:idp.read/.write` and
+`tenant:access.read`. Its grant is `manager` on the **workspace**, because creating an environment needs
+`manager` on its parent. Connection `sandbox` has `tenant:environments.read/.write`, `tenant:idp.read/.write`
+and `tenant:access.read`, with `manager` on the sandbox. `tenant:access.read` is the ownership check every plan
+makes; the sandbox's `tenant:environments.write` covers the provisioning file the App seeds where a repository
+has none, which declares the sandbox itself.
 
 The production GitHub environment's name comes from `github.productionEnvironment`. The workflow reads it
 from `template.json`, so it needs no extra variable.
