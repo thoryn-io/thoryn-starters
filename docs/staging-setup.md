@@ -51,7 +51,7 @@ for stack in express spring-boot aspnet-core; do
     --repository thoryn-io/thoryn-starters --github-hosted-runners-only \
     --scope tenant:applications.read --scope tenant:applications.write \
     --scope tenant:users.read --scope tenant:users.write \
-    --scope tenant:environments.read
+    --scope tenant:environments.read --scope tenant:access.read
   # Note the clientId (wi_…) it prints, and the sandbox's id from `thoryn env list --output json`.
 done
 
@@ -71,7 +71,8 @@ gh variable set THORYN_STARTERS_WIF_ASPNET_CORE -R thoryn-io/thoryn-starters --b
 thoryn env create ci-config --name "Sandbox ci-config"
 thoryn workload-identity trusts create --environment ci-config --name thoryn-starters-config \
   --repository thoryn-io/thoryn-starters --github-hosted-runners-only \
-  --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write
+  --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write \
+  --scope tenant:access.read
 thoryn access grant client:<wi_config> manager environment:<ci-config id>
 gh variable set THORYN_STARTERS_WIF_CONFIG -R thoryn-io/thoryn-starters --body '<wi_config>'
 # Optional: pin the CLI release the jobs install (default: the latest cli-v* release).

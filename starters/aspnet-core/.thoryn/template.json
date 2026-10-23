@@ -32,7 +32,8 @@
         "tenant:applications.write",
         "tenant:users.read",
         "tenant:users.write",
-        "tenant:environments.read"
+        "tenant:environments.read",
+        "tenant:access.read"
       ],
       "grant": { "relation": "manager", "on": "environment" }
     }
