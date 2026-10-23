@@ -20,7 +20,10 @@
 //    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
 //    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project);
 //  - SSO-3675: the publish matrix in .github/workflows/publish.yml names exactly the directories under
-//    starters/, so a starter cannot be added (or renamed) without being published to its template repository.
+//    starters/, so a starter cannot be added (or renamed) without being published to its template repository;
+//  - SSO-3675 (hardening): every publish.yml job that mints the publish App's token is bound to the GitHub
+//    environment PUBLISH_ENVIRONMENT (main-only), runs the configuration gate before minting, and needs a job
+//    that is NOT bound to it and asserts the environment's branch policy first.
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -300,6 +303,54 @@ export function checkPublishMatrix(repoRoot) {
   return problems;
 }
 
+/** The GitHub environment (deployment-branch policy: main only) that holds the publish App's id and key. */
+export const PUBLISH_ENVIRONMENT = "starters-publish";
+
+const usesTokenAction = (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/create-github-app-token@");
+const runs = (step, script) => typeof step?.run === "string" && step.run.includes(script);
+const environmentName = (job) => (typeof job?.environment === "string" ? job.environment : job?.environment?.name);
+
+/**
+ * SSO-3675 (hardening) — the publish App's key may only ever reach a job running for main. GitHub guarantees
+ * that for a job bound to an environment whose deployment-branch policy is `main` (the policy itself is an
+ * operator setting, asserted at run time by scripts/publish/assert-environment.sh). This pins the workflow
+ * half: the environment name is declared once (workflow-level env PUBLISH_ENVIRONMENT) and equals the
+ * constant; every job that mints the App token is bound to it and runs gate.sh BEFORE minting (environment
+ * secrets are invisible to unbound jobs, so the gate cannot live anywhere else); and each such job needs an
+ * unbound job that runs assert-environment.sh, so a missing or unprotected environment fails the run before
+ * a bound job could create it or read from it. Returns a list of problems (empty ⇒ in order).
+ */
+export function checkPublishEnvironment(repoRoot) {
+  const workflowPath = join(repoRoot, PUBLISH_WORKFLOW);
+  if (!existsSync(workflowPath)) return [`${PUBLISH_WORKFLOW} is missing: nothing publishes the starters`];
+  const doc = YAML.parse(readFileSync(workflowPath, "utf8"));
+  const jobs = doc?.jobs ?? {};
+  const problems = [];
+  if (doc?.env?.PUBLISH_ENVIRONMENT !== PUBLISH_ENVIRONMENT) {
+    problems.push(`${PUBLISH_WORKFLOW}: the workflow-level env PUBLISH_ENVIRONMENT must be "${PUBLISH_ENVIRONMENT}"`);
+  }
+  const asserting = Object.entries(jobs)
+    .filter(([, job]) => !environmentName(job) && (job.steps ?? []).some((s) => runs(s, "assert-environment.sh")))
+    .map(([id]) => id);
+  const minting = Object.entries(jobs).filter(([, job]) => (job.steps ?? []).some(usesTokenAction));
+  if (!minting.length) problems.push(`${PUBLISH_WORKFLOW}: no job mints the publish App's token`);
+  for (const [id, job] of minting) {
+    if (environmentName(job) !== PUBLISH_ENVIRONMENT) {
+      problems.push(`${PUBLISH_WORKFLOW}: job "${id}" mints the publish App's token but is not bound to the environment ${PUBLISH_ENVIRONMENT}`);
+    }
+    const steps = job.steps ?? [];
+    const gate = steps.findIndex((s) => runs(s, "gate.sh"));
+    if (gate < 0 || gate > steps.findIndex(usesTokenAction)) {
+      problems.push(`${PUBLISH_WORKFLOW}: job "${id}" must run scripts/publish/gate.sh before it mints the publish App's token`);
+    }
+    const needs = [job.needs ?? []].flat();
+    if (!asserting.some((a) => needs.includes(a))) {
+      problems.push(`${PUBLISH_WORKFLOW}: job "${id}" must need a job that is not bound to an environment and runs scripts/publish/assert-environment.sh`);
+    }
+  }
+  return problems;
+}
+
 export function compileSchemas() {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   const load = (f) => JSON.parse(readFileSync(join(root, "schemas", f), "utf8"));
@@ -321,6 +372,9 @@ function main() {
   const matrixProblems = checkPublishMatrix(root);
   problems.push(...matrixProblems);
   if (!matrixProblems.length) console.log(`✔ ${PUBLISH_WORKFLOW} publishes exactly the starters/* directories`);
+  const environmentProblems = checkPublishEnvironment(root);
+  problems.push(...environmentProblems);
+  if (!environmentProblems.length) console.log(`✔ ${PUBLISH_WORKFLOW} mints the publish token only in the main-only environment ${PUBLISH_ENVIRONMENT}`);
   if (problems.length) {
     console.error(`\n✖ ${problems.length} problem(s):\n  ${problems.join("\n  ")}`);
     process.exit(1);

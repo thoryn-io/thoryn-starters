@@ -10,7 +10,7 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeF
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PUBLISH_WORKFLOW, checkPublishMatrix } from "./validate-templates.mjs";
+import { PUBLISH_ENVIRONMENT, PUBLISH_WORKFLOW, checkPublishEnvironment, checkPublishMatrix } from "./validate-templates.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scripts = join(root, "scripts/publish");
@@ -48,30 +48,125 @@ const starterFiles = { "README.md": "# hi\n", "src/app.js": "export default 1;\n
 
 // --- gate.sh -----------------------------------------------------------------------------------------
 
-test("gate.sh fails, as an ::error naming docs/publishing.md, when the App id variable is unset", () => {
-  const res = run("gate.sh", [], { env: { APP_ID: "", HAS_PRIVATE_KEY: "true" } });
+const gateEnv = { PUBLISH_ENVIRONMENT: "starters-publish" };
+
+test("gate.sh fails, as an ::error naming the environment and docs/publishing.md, when the App id variable is unset", () => {
+  const res = run("gate.sh", [], { env: { ...gateEnv, APP_ID: "", HAS_PRIVATE_KEY: "true" } });
   assert.equal(res.status, 1, res.stdout);
   assert.match(res.stdout, /^::error title=The template publisher is not configured::/m);
-  assert.match(res.stdout, /the repository variable STARTERS_PUBLISH_APP_ID\./);
+  assert.match(res.stdout, /needs the variable STARTERS_PUBLISH_APP_ID in the GitHub environment starters-publish\./);
   assert.match(res.stdout, /docs\/publishing\.md/);
   assert.doesNotMatch(res.stdout, /::notice::/);
 });
 
 test("gate.sh fails when the private key secret is absent, and names both when both are missing", () => {
-  const one = run("gate.sh", [], { env: { APP_ID: "12345", HAS_PRIVATE_KEY: "false" } });
+  const one = run("gate.sh", [], { env: { ...gateEnv, APP_ID: "12345", HAS_PRIVATE_KEY: "false" } });
   assert.equal(one.status, 1);
-  assert.match(one.stdout, /needs the repository secret STARTERS_PUBLISH_APP_PRIVATE_KEY\./);
+  assert.match(one.stdout, /needs the secret STARTERS_PUBLISH_APP_PRIVATE_KEY in the GitHub environment starters-publish\./);
   assert.doesNotMatch(one.stdout, /STARTERS_PUBLISH_APP_ID/);
-  const both = run("gate.sh", [], { env: {} });
+  const both = run("gate.sh", [], { env: gateEnv });
   assert.equal(both.status, 1);
-  assert.match(both.stdout, /STARTERS_PUBLISH_APP_ID and the repository secret STARTERS_PUBLISH_APP_PRIVATE_KEY/);
+  assert.match(both.stdout, /STARTERS_PUBLISH_APP_ID and the secret STARTERS_PUBLISH_APP_PRIVATE_KEY in the GitHub environment/);
 });
 
 test("gate.sh passes only with the variable set and the secret present, and never prints a secret value", () => {
-  const res = run("gate.sh", [], { env: { APP_ID: "12345", HAS_PRIVATE_KEY: "true" } });
+  const res = run("gate.sh", [], { env: { ...gateEnv, APP_ID: "12345", HAS_PRIVATE_KEY: "true" } });
   assert.equal(res.status, 0, res.stdout);
   assert.match(res.stdout, /Publisher configured/);
   assert.doesNotMatch(res.stdout, /12345/);
+});
+
+test("gate.sh refuses to run without the environment's name rather than guessing it", () => {
+  const res = run("gate.sh", [], { env: { APP_ID: "12345", HAS_PRIVATE_KEY: "true" } });
+  assert.notEqual(res.status, 0);
+  assert.doesNotMatch(res.stdout, /Publisher configured/);
+});
+
+// --- assert-environment.sh ----------------------------------------------------------------------------
+
+/**
+ * A fake `gh` answering the two environment reads assert-environment.sh makes. `environment` is the GET
+ * environment body (null ⇒ HTTP 404, "error" ⇒ HTTP 403); `rules` the branch_policies list.
+ */
+function fakeEnvGh(dir, { environment, rules = [] }) {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const envJson = JSON.stringify(environment ?? {});
+  const rulesJson = JSON.stringify({ total_count: rules.length, branch_policies: rules });
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env bash
+# gh api <path> --jq <expr>: evaluate the expression with jq over a canned body, like gh does.
+path=$2; expr=$4
+case "$path" in
+  */deployment-branch-policies)
+    ${rules === "error" ? `echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1` : ""}
+    jq -r "$expr" <<<'${rulesJson}';;
+  repos/*/environments/*)
+    ${environment === null ? `echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1` : ""}
+    ${environment === "error" ? `echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1` : ""}
+    jq -r "$expr" <<<'${envJson}';;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 1;;
+esac
+`);
+  chmodSync(join(bin, "gh"), 0o755);
+  return `${bin}:${process.env.PATH}`;
+}
+
+const mainOnly = { environment: { name: "starters-publish", deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }, rules: [{ id: 1, name: "main", type: "branch" }] };
+
+function assertEnvironment(gh, env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "environment-"));
+  return run("assert-environment.sh", ["thoryn-io/thoryn-starters", "starters-publish"], { env: { PATH: fakeEnvGh(dir, gh), KEY_OUTSIDE_ENVIRONMENT: "false", ...env } });
+}
+
+test("assert-environment.sh passes for an environment only main can deploy to, with no repository-level key", () => {
+  const res = assertEnvironment(mainOnly);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /only the branch main can deploy/);
+});
+
+test("assert-environment.sh fails when the key is also readable outside the environment (a repository secret)", () => {
+  const res = assertEnvironment(mainOnly, { KEY_OUTSIDE_ENVIRONMENT: "true" });
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /^::error title=The publish key is not confined to main::STARTERS_PUBLISH_APP_PRIVATE_KEY is readable outside the environment starters-publish/m);
+  assert.match(res.stdout, /gh secret delete STARTERS_PUBLISH_APP_PRIVATE_KEY -R thoryn-io\/thoryn-starters/);
+});
+
+test("assert-environment.sh fails when the environment does not exist, instead of letting the publish job create it unprotected", () => {
+  const res = assertEnvironment({ environment: null });
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /the environment starters-publish does not exist on thoryn-io\/thoryn-starters/);
+});
+
+test("assert-environment.sh fails for an environment with no branch policy, or one open to every protected branch", () => {
+  const none = assertEnvironment({ environment: { deployment_branch_policy: null } });
+  assert.equal(none.status, 1);
+  assert.match(none.stdout, /has no deployment-branch policy, so a job on any branch can read its secrets/);
+  const prot = assertEnvironment({ environment: { deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } } });
+  assert.equal(prot.status, 1);
+  assert.match(prot.stdout, /may be deployed from any protected branch/);
+});
+
+test("assert-environment.sh fails unless the selected-branch rules are exactly the branch main", () => {
+  const custom = { protected_branches: false, custom_branch_policies: true };
+  for (const rules of [
+    [],
+    [{ name: "main", type: "branch" }, { name: "release/*", type: "branch" }],
+    [{ name: "*", type: "branch" }],
+    [{ name: "main", type: "tag" }],
+  ]) {
+    const res = assertEnvironment({ environment: { deployment_branch_policy: custom }, rules });
+    assert.equal(res.status, 1, JSON.stringify(rules));
+    assert.match(res.stdout, /it must allow exactly the branch main/, JSON.stringify(rules));
+  }
+});
+
+test("assert-environment.sh fails, rather than passing, when it cannot read the environment or its branch rules", () => {
+  const res = assertEnvironment({ environment: "error" });
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /could not read the environment starters-publish \(the job needs permissions: actions: read\)/);
+  const rules = assertEnvironment({ environment: mainOnly.environment, rules: "error" });
+  assert.equal(rules.status, 1);
+  assert.match(rules.stdout, /could not read the deployment-branch rules of the environment starters-publish/);
 });
 
 // --- assert-mirror.sh ----------------------------------------------------------------------------------
@@ -290,4 +385,50 @@ test("a matrix entry without a starter directory fails the check, and so does a 
   const dynamic = repoCopy();
   writeFileSync(join(dynamic, PUBLISH_WORKFLOW), readFileSync(join(dynamic, PUBLISH_WORKFLOW), "utf8").replace(/starter: \[.*\]/, "starter: ${{ fromJSON(needs.plan.outputs.starters) }}"));
   assert.match(checkPublishMatrix(dynamic).join("\n"), /must be a literal list of starter names/);
+});
+
+// --- the publish token is minted only in the main-only environment (npm run check) ------------------------
+
+function editedWorkflow(edit) {
+  const dir = repoCopy();
+  const path = join(dir, PUBLISH_WORKFLOW);
+  const before = readFileSync(path, "utf8");
+  const after = edit(before);
+  assert.notEqual(after, before, "the edit must change the workflow");
+  writeFileSync(path, after);
+  return dir;
+}
+
+test("this repository's publish workflow mints the App token only in the main-only environment, gated, after the policy check", () => {
+  assert.equal(PUBLISH_ENVIRONMENT, "starters-publish");
+  assert.deepEqual(checkPublishEnvironment(root), []);
+});
+
+test("a token-minting job that is not bound to the environment fails the check", () => {
+  const dir = editedWorkflow((w) => w.replace(/^    environment: starters-publish\n/m, ""));
+  assert.deepEqual(checkPublishEnvironment(dir), [`${PUBLISH_WORKFLOW}: job "publish" mints the publish App's token but is not bound to the environment starters-publish`]);
+});
+
+test("an environment name that drifts from PUBLISH_ENVIRONMENT fails the check", () => {
+  const job = editedWorkflow((w) => w.replace(/^    environment: starters-publish$/m, "    environment: publish"));
+  assert.match(checkPublishEnvironment(job).join("\n"), /not bound to the environment starters-publish/);
+  const env = editedWorkflow((w) => w.replace(/^  PUBLISH_ENVIRONMENT: starters-publish$/m, "  PUBLISH_ENVIRONMENT: publish"));
+  assert.deepEqual(checkPublishEnvironment(env), [`${PUBLISH_WORKFLOW}: the workflow-level env PUBLISH_ENVIRONMENT must be "starters-publish"`]);
+});
+
+test("a gate that runs after the token is minted, or not at all, fails the check", () => {
+  const expected = [`${PUBLISH_WORKFLOW}: job "publish" must run scripts/publish/gate.sh before it mints the publish App's token`];
+  const none = editedWorkflow((w) => w.replace(/        run: source\/scripts\/publish\/gate\.sh\n/, "        run: echo no gate\n"));
+  assert.deepEqual(checkPublishEnvironment(none), expected);
+  // Move the gate step to the end of the job, after the token step.
+  const late = editedWorkflow((w) => {
+    const gate = w.match(/      # Environment variables and secrets are visible only inside this bound job[\s\S]*?        run: source\/scripts\/publish\/gate\.sh\n/)[0];
+    return w.replace(gate, "") + gate.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+  });
+  assert.deepEqual(checkPublishEnvironment(late), expected);
+});
+
+test("a token-minting job that does not wait for the unbound environment check fails the check", () => {
+  const dir = editedWorkflow((w) => w.replace(/        run: scripts\/publish\/assert-environment\.sh "\$REPO" "\$PUBLISH_ENVIRONMENT"\n/, "        run: echo skipped\n"));
+  assert.deepEqual(checkPublishEnvironment(dir), [`${PUBLISH_WORKFLOW}: job "publish" must need a job that is not bound to an environment and runs scripts/publish/assert-environment.sh`]);
 });

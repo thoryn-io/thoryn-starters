@@ -1,14 +1,18 @@
 # Mirror every starter to its template repository (thoryn-io/starter-<name>) once CI is green on main.
 # The starter-project flow generates customer repositories from those template repositories.
 #
-# Needs a GitHub App installed on the four template repositories with Contents + Workflows: read & write:
-#   repository variable STARTERS_PUBLISH_APP_ID, repository secret STARTERS_PUBLISH_APP_PRIVATE_KEY.
+# Needs a GitHub App installed on the four template repositories with Contents + Workflows: read & write. Its
+# id (variable STARTERS_PUBLISH_APP_ID) and private key (secret STARTERS_PUBLISH_APP_PRIVATE_KEY) live in the
+# GitHub environment named by PUBLISH_ENVIRONMENT below, whose deployment-branch policy allows only main: the
+# key reaches the publish job only on a run for main, never a job on another branch, whatever its workflow says.
 # SSO-3675: without them a run for main FAILS (it used to skip with a notice and stay green while the
 # template repositories sat empty). After each mirror the job verifies, from a fresh clone, that the
 # template repository holds exactly the starter's files and is marked as a template. See docs/publishing.md.
 name: Publish templates
 
 on:
+  # zizmor: ignore[dangerous-triggers] -- only a CI run for a PUSH to main publishes (plan's if: requires
+  # workflow_run.event == 'push'), never a pull_request run, so no fork-controlled ref or artifact is used.
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -22,38 +26,54 @@ concurrency:
   group: publish-templates
   cancel-in-progress: false
 
+env:
+  # Must equal `environment:` of the publish job (`npm run check` fails otherwise: an `environment:` cannot
+  # read the env context, so the name is written twice and checked).
+  PUBLISH_ENVIRONMENT: starters-publish
+
 jobs:
   plan:
-    name: Publisher configured
+    name: Publish key confined to main
     # A fork of this repository cannot hold the publish App (it is installed on thoryn-io's template
-    # repositories, and its key is this repository's secret), so in a fork every job is skipped — visibly,
-    # as "skipped", never as a green publish. Everywhere else a run for main must publish or fail.
+    # repositories, and its key is this repository's environment secret), so in a fork every job is skipped —
+    # visibly, as "skipped", never as a green publish. Everywhere else a run for main must publish or fail.
     if: >-
       !github.event.repository.fork &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # GET the environment and its deployment-branch rules
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
       - id: plan
         env:
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-      - name: The publisher must be configured (variable + secret), or this run fails
+      # Runs BEFORE any job bound to the environment: a missing environment would otherwise be created, with no
+      # protection, by the first bound job that names it.
+      - name: The environment exists, only main can deploy to it, and the key is not a repository secret
         env:
-          APP_ID: ${{ vars.STARTERS_PUBLISH_APP_ID }}
-          # Only whether the secret is present reaches the script; its value never does.
-          HAS_PRIVATE_KEY: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY != '' }}
-        run: scripts/publish/gate.sh
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # This job is not bound to the environment, so a non-empty value here is a repository or
+          # organisation secret. Only whether it is present reaches the script; its value never does.
+          KEY_OUTSIDE_ENVIRONMENT: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY != '' }}
+        run: scripts/publish/assert-environment.sh "$REPO" "$PUBLISH_ENVIRONMENT"
 
   publish:
     name: Publish ${{ matrix.starter }}
     needs: plan
     runs-on: ubuntu-latest
+    # The App id and key are this environment's variable and secret. GitHub refuses the job (and so the key)
+    # when the run's ref is not main.
+    environment: starters-publish
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +89,15 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           path: source
+          persist-credentials: false
+      # Environment variables and secrets are visible only inside this bound job, so the gate lives here:
+      # without the App id and key the run FAILS, before any token is minted.
+      - name: The publisher must be configured (environment variable + secret), or this run fails
+        env:
+          APP_ID: ${{ vars.STARTERS_PUBLISH_APP_ID }}
+          # Only whether the secret is present reaches the script; its value never does.
+          HAS_PRIVATE_KEY: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY != '' }}
+        run: source/scripts/publish/gate.sh
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -76,6 +105,11 @@ jobs:
           private-key: ${{ secrets.STARTERS_PUBLISH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: starter-${{ matrix.starter }}
+          # Ask for exactly what the mirror uses, even if the App is ever granted more: push commits
+          # (contents), push .github/workflows/** (workflows), read the repository (metadata).
+          permission-contents: write
+          permission-workflows: write
+          permission-metadata: read
       - name: Mirror starters/${{ matrix.starter }} to ${{ github.repository_owner }}/starter-${{ matrix.starter }}
         id: mirror
         env:
