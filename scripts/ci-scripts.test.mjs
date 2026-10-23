@@ -50,7 +50,7 @@ test("login.sh signs in as the connection: its client id variable, the composed 
     "--workspace", "acme",
     "--client-id", "wi_0123456789abcdef",
     "--audience", "https://acme.auth.stg.thoryn.org/dev",
-    "--scope", "tenant:applications.read tenant:applications.write tenant:users.read tenant:users.write tenant:environments.read tenant:environments.write tenant:access.read",
+    "--scope", "tenant:applications.read tenant:applications.write tenant:users.read tenant:users.write tenant:environments.read tenant:access.read",
   ]);
 });
 

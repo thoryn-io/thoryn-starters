@@ -114,8 +114,8 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
    ```bash
    thoryn workload-identity trusts create --environment <slug> --name <repository> \
      --repository <owner>/<repository> \
-     --scope tenant:environments.read --scope tenant:environments.write \
-     --scope tenant:idp.read --scope tenant:idp.write --scope tenant:access.read
+     --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write \
+     --scope tenant:access.read
    thoryn access grant client:<its wi_… clientId> manager environment:<the sandbox id>
    ```
 3. Add a connection for it to `.thoryn/template.json`, with its own two variables (for example

@@ -51,7 +51,6 @@
       "provisionFile": ".thoryn/environments/sandbox/provision.yaml",
       "scopes": [
         "tenant:environments.read",
-        "tenant:environments.write",
         "tenant:idp.read",
         "tenant:idp.write",
         "tenant:access.read"
