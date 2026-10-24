@@ -195,7 +195,9 @@ GitHub creates a repository from a template with one call (`POST /repos/{owner}/
 records "generated from" provenance, but only from a whole repository, not from a subdirectory. So each
 starter is published as its own template repository, and this repository stays the single place where they
 are developed and tested. `.github/workflows/publish.yml` mirrors `starters/<name>/` to
-`thoryn-io/starter-<name>` after CI is green on `main`. See [`docs/publishing.md`](docs/publishing.md).
+`thoryn-io/starter-<name>` after CI is green on `main`, then verifies from a fresh clone that the template
+repository holds exactly those files; an unconfigured publisher fails the run (SSO-3675). See
+[`docs/publishing.md`](docs/publishing.md).
 
 ## Staging CI
 
