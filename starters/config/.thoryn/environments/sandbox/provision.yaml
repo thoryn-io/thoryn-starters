@@ -1,13 +1,16 @@
-# SANDBOX section of the workspace configuration — planned on every pull request and applied on every push
-# to main, signed in with this sandbox's workload identity trust (connection `sandbox` in
-# .thoryn/template.json). The sandbox is the THORYN_SANDBOX_ENVIRONMENT Actions variable; the `thoryn` CLI
-# fills in `{{env.THORYN_SANDBOX_ENVIRONMENT}}` from the environment when it reads the file.
+# SANDBOX section of the workspace's TENANT provisioning (oauthy ADR 2026-10-25): what the sandbox IS — its sign-in
+# configuration, its test users, its roles, and the workload identity trusts of the app projects bound to it. The
+# applications that USE the sandbox declare their own OAuth clients in their own thoryn.io/application/v1 files.
+#
+# Converged by the sandbox connection (.thoryn/environments/sandbox/connection.json, seeded with the repository: this
+# repository's workload identity in the sandbox, manager of that sandbox alone). The sandbox is named by
+# THORYN_SANDBOX_ENVIRONMENT, which the `thoryn` CLI fills in from the environment when it reads the file (in CI from
+# the `env:` block of .thoryn/workflow.yaml). `thoryn project init config` replaces this file with one naming the
+# sandbox literally. The environment itself is declared in the production section.
 #
 # A sandbox never sends email: it captures it in its test inbox (`thoryn env test-emails`), so there is no
-# emailProvider here. The environment itself is declared in the production section.
-#
-# To add another sandbox, see "Another sandbox" in the README.
-apiVersion: thoryn.io/provision/v1
+# emailProvider here.
+apiVersion: thoryn.io/tenant/v1
 resources:
   # Offer every method in the sandbox so developers can try them before production does.
   - kind: loginMethods
@@ -15,7 +18,12 @@ resources:
     spec:
       methods: ["password", "passkey", "magic_code", "magic_link"]
 
-  # - kind: loginTheme
+  # A sandbox TEST USER (scopes tenant:users.read / tenant:users.write). An app project references it by email in its
+  # test configuration; it never creates one. The password comes from an environment variable, never from this file.
+  # - kind: user
+  #   name: test-user
   #   environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
   #   spec:
-  #     primaryColor: "#0a7d33"
+  #     email: "test-user@example.com"
+  #     passwordEnv: THORYN_TEST_USER_PASSWORD
+  #     emailVerified: true

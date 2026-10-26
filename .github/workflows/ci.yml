@@ -126,14 +126,17 @@ jobs:
     defaults:
       run:
         working-directory: starters/config
-    # The config starter's own variables, supplied from this repository's staging fixture exactly as a
-    # generated config repository's workflow maps its Actions variables.
+    # The config starter's sandbox section, planned against this repository's staging fixture. A generated config
+    # repository runs it through the seeded stub and thoryn-cli's reusable workflow (SSO-3971); the template ships no
+    # CI script, so this job signs in with the shared installer and sign-in script and the config declaration.
     env:
       THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
       THORYN_WORKSPACE: ${{ vars.THORYN_STARTERS_WORKSPACE }}
       THORYN_SANDBOX_ENVIRONMENT: ci-config
       THORYN_SANDBOX_WIF_CLIENT_ID: ${{ vars.THORYN_STARTERS_WIF_CONFIG }}
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      # The shared scripts read the connection (its client id variable, sandbox variable and scopes) from this declaration.
+      THORYN_TEMPLATE_FILE: .thoryn/template.json
       GH_TOKEN: ${{ github.token }}
       FORK: ${{ github.event.pull_request.head.repo.fork == true }}
     steps:
@@ -151,10 +154,10 @@ jobs:
       # Separate steps: install-cli.sh puts the CLI on PATH for the NEXT steps ($GITHUB_PATH).
       - name: Install the thoryn CLI
         if: steps.gate.outputs.ready == 'true'
-        run: .thoryn/ci/install-cli.sh
+        run: ../../shared/thoryn/ci/install-cli.sh
       - name: Sign in (workload identity)
         if: steps.gate.outputs.ready == 'true'
-        run: .thoryn/ci/login.sh sandbox
+        run: ../../shared/thoryn/ci/login.sh sandbox
       - name: Plan the sandbox section
         if: steps.gate.outputs.ready == 'true'
         run: thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
