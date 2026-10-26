@@ -68,7 +68,7 @@ test("a workflow may read only declared variables, and must read every one", () 
 
 test("an unknown {{env.NAME}} in a provisioning value fails; a comment may mention the grammar", () => {
   const dir = copy("config");
-  edit(dir, ".thoryn/environments/production/provision.yaml", (t) => t.replace('displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"', 'displayName: "{{env.SANDBOX_NAME}}"'));
+  edit(dir, ".thoryn/environments/production/provision.yaml", (t) => t.replace('slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"', 'slug: "{{env.SANDBOX_NAME}}"'));
   assert.match(checkStarter(dir, schemas).join("\n"), /\{\{env\.SANDBOX_NAME\}\} is neither a declared variable nor a run-time value/);
 });
 
@@ -176,4 +176,97 @@ test("the pre-split config template (variable-driven thoryn.yml, .thoryn/ci, pro
   assert.equal(problems.filter((p) => /apiVersion must be thoryn\.io\/tenant\/v1/.test(p)).length, 2);
   assert.ok(problems.some((p) => /thoryn\.yml: a config template ships no workflow/.test(p)), problems.join("\n"));
   assert.ok(problems.some((p) => /\.thoryn\/ci\/ is gone/.test(p)), problems.join("\n"));
+});
+
+// SSO-3993 — the config template changes nothing that already exists: its sections declare only the sandbox the setup
+// creates (everything else is a commented example; the import pull request, SSO-3995, brings the live configuration),
+// and its connections request read and write for every tenant kind, so the import can read the whole tenant.
+const PRODUCTION = ".thoryn/environments/production/provision.yaml";
+const SANDBOX = ".thoryn/environments/sandbox/provision.yaml";
+
+test("a config section declares only the environment the setup creates — any other tenant kind fails", () => {
+  const dir = copy("config");
+  edit(dir, PRODUCTION, (t) => `${t}\n  - kind: loginMethods\n    spec:\n      methods: ["password", "passkey"]\n`);
+  edit(dir, SANDBOX, (t) => `${t}\n  - kind: user\n    name: test-user\n    environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"\n    spec:\n      email: "t@example.com"\n      passwordEnv: THORYN_TEST_USER_PASSWORD\n`);
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /production\/provision\.yaml: a config template declares only the environment the setup creates — loginMethods\/loginMethods would change an existing workspace/);
+  assert.match(problems, /sandbox\/provision\.yaml: a config template declares only the environment the setup creates — user\/test-user would change an existing workspace/);
+});
+
+test("a commented example is not a declaration: the shipped sections carry them and validate", () => {
+  for (const f of [PRODUCTION, SANDBOX]) {
+    const text = readFileSync(join(root, "starters/config", f), "utf8");
+    assert.match(text, /^ {2}# - kind: (loginMethods|user)$/m, `${f} keeps its commented examples`);
+  }
+  assert.deepEqual(checkStarter(join(root, "starters/config"), schemas), []);
+});
+
+test("a config sandbox section declares its own sandbox, read-only", () => {
+  const dir = copy("config");
+  edit(dir, SANDBOX, (t) => t.replace("    readOnly: true\n", ""));
+  assert.match(checkStarter(dir, schemas).join("\n"), /sandbox\/provision\.yaml: environment\/sandbox must be readOnly: true/);
+
+  const other = copy("config");
+  edit(other, SANDBOX, (t) => t.replace('      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"', '      slug: "dev"'));
+  assert.match(checkStarter(other, schemas).join("\n"), /sandbox\/provision\.yaml: environment\/sandbox must be \{\{env\.THORYN_SANDBOX_ENVIRONMENT\}\}, the sandbox this section configures/);
+});
+
+test("the production section owns the sandbox it declares, and declares no environment the setup did not create", () => {
+  const dir = copy("config");
+  edit(dir, PRODUCTION, (t) => t.replace("    retain: true\n", "    readOnly: true\n"));
+  assert.match(checkStarter(dir, schemas).join("\n"), /production\/provision\.yaml: environment\/sandbox must not be readOnly/);
+
+  const extra = copy("config");
+  edit(extra, PRODUCTION, (t) => `${t}\n  - kind: environment\n    name: staging\n    spec:\n      slug: staging\n`);
+  assert.match(checkStarter(extra, schemas).join("\n"), /production\/provision\.yaml: environment\/staging is not a sandbox the setup creates/);
+});
+
+test("a config section declares the sandbox by its slug only: a display name would be compared with the live one", () => {
+  const dir = copy("config");
+  edit(dir, PRODUCTION, (t) => t.replace('      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"\n', '      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"\n      displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"\n'));
+  assert.match(checkStarter(dir, schemas).join("\n"), /production\/provision\.yaml: environment\/sandbox is declared by its slug only — displayName would be compared with the live sandbox/);
+});
+
+test("every config connection requests read and write for every tenant kind", () => {
+  const dir = copy("config");
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.connections.production.scopes = m.connections.production.scopes.filter((s) => s !== "tenant:email.read");
+    m.connections.sandbox.scopes = m.connections.sandbox.scopes.filter((s) => !s.startsWith("tenant:roles."));
+    return m;
+  });
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:email\.read/);
+  assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:roles\.read, tenant:roles\.write/);
+});
+
+test("the pre-SSO-3993 config template (login methods declared, idp and environments scopes only) fails the check", () => {
+  // The shape thoryn-starters published until SSO-3993 (commit dbea3ef): the control for the tests above.
+  const dir = copy("config");
+  writeFileSync(join(dir, PRODUCTION), `apiVersion: thoryn.io/tenant/v1
+resources:
+  - kind: environment
+    name: sandbox
+    spec:
+      slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
+      displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"
+  - kind: loginMethods
+    spec:
+      methods: ["password", "passkey"]
+`);
+  writeFileSync(join(dir, SANDBOX), `apiVersion: thoryn.io/tenant/v1
+resources:
+  - kind: loginMethods
+    environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
+    spec:
+      methods: ["password", "passkey", "magic_code", "magic_link"]
+`);
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.connections.production.scopes = ["tenant:environments.read", "tenant:environments.write", "tenant:idp.read", "tenant:idp.write", "tenant:access.read"];
+    m.connections.sandbox.scopes = ["tenant:environments.read", "tenant:idp.read", "tenant:idp.write", "tenant:access.read"];
+    return m;
+  });
+  const problems = checkStarter(dir, schemas);
+  assert.equal(problems.filter((p) => /declares only the environment the setup creates — loginMethods/.test(p)).length, 2, problems.join("\n"));
+  assert.equal(problems.filter((p) => /requests read and write for every tenant kind/.test(p)).length, 2, problems.join("\n"));
+  assert.ok(problems.some((p) => /environment\/sandbox is declared by its slug only — displayName/.test(p)), problems.join("\n"));
 });

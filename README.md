@@ -150,12 +150,24 @@ to Thoryn: the app repository has no production identity. Guide:
 | `THORYN_SANDBOX_WIF_CLIENT_ID` | repository | The sandbox trust's `clientId`. |
 | `THORYN_PRODUCTION_WIF_CLIENT_ID` | environment `thoryn-production` | The production trust's `clientId`; only the production job can read it. |
 
-Connection `production` has `tenant:environments.read/.write`, `tenant:idp.read/.write` and
-`tenant:access.read`. Its grant is `manager` on the **workspace**, because creating an environment needs
-`manager` on its parent. Connection `sandbox` has `tenant:environments.read`, `tenant:idp.read/.write` and
-`tenant:access.read`, with `manager` on the sandbox. `tenant:access.read` is the ownership check every plan
-makes. A sandbox trust holds no `tenant:environments.write`: the sandbox section configures the sandbox, it
-does not own it (production declares it).
+Both connections request **read and write for every tenant kind** (SSO-3993): `tenant:<area>.read` and
+`.write` for `workload-identity`, `access`, `environments`, `applications`, `users`, `idp`, `federation`,
+`email`, `domains` and `roles` — thoryn-cli's `ScopeRequirements.AREAS` plus `access`, the same list the
+`starters` sign-in client holds (thoryn-provisioning SSO-3992). That lets the import pull request read the whole
+tenant and every imported entry be converged; the production trust's plan profile is minted every `.read`
+member. `npm run check` fails a config connection that lacks one. Connection `production`'s grant is `manager`
+on the **workspace**, because creating an environment needs `manager` on its parent; connection `sandbox`'s is
+`manager` on the sandbox, so the grant (not the scopes) keeps it inside that sandbox. A trust can carry only
+scopes the person creating it holds, so creating a config project from this template needs a wizard token with
+all of them (thoryn-provisioning #39); before that, the creation is refused `scope_not_grantable` and nothing is
+created.
+
+The template's two sections declare **only the sandbox environment the setup creates** — production owns it
+(`retain: true`), the sandbox section anchors on it `readOnly: true`, both by slug only — and every other
+tenant kind as a commented example. So merging the setup pull request changes nothing that already exists in
+the workspace; its current configuration arrives through the import pull request (thoryn-provisioning ADR
+`2026-09-30-starter-orchestrator-service.md` §13, SSO-3995). `npm run check` fails a config section that
+declares anything else.
 
 The production GitHub environment's name comes from `github.productionEnvironment` (`thoryn-production`); the
 production trust's read-only plan profile is keyed on its `-plan` sibling (`thoryn-production-plan`). Nothing in a
@@ -181,8 +193,9 @@ client id either; those are resolved at run time.
 
 For the config project:
 
-- the sandbox environment itself (its trust must live in it). It is created with the display name the
-  production section declares (`Sandbox <slug>`), so the first apply adopts it unchanged;
+- the sandbox environment itself (its trust must live in it), unless an existing one was chosen. The
+  production section declares it by slug only, so the first apply adopts it unchanged, whatever its display
+  name;
 - the GitHub environment `github.productionEnvironment`, with required reviewers and restricted to `main`;
 - a **production** trust pinned to the repository **and** that GitHub environment (`confirmProduction`),
   with the production connection's scopes, and `manager` on the **workspace** for its client. That is the
@@ -216,7 +229,8 @@ repository holds exactly those files; an unconfigured publisher fails the run (S
   every starter validated as is (no placeholder, declaration against `schemas/template.schema.json` and the
   variable contract, provisioning files against the CLI's schema, the production deploy skeleton's
   no-identity shape, and — SSO-3971 — the config starter's sections as `thoryn.io/tenant/v1` with no workflow,
-  CI script, `.thoryn/workflow.yaml` or `connection.json` of its own), actionlint.
+  CI script, `.thoryn/workflow.yaml` or `connection.json` of its own; SSO-3993 — declaring only the sandbox
+  environment, with every connection requesting every tenant kind's scopes), actionlint.
 - **config — staging plan**: the config starter's sandbox section planned against the staging fixture, signed
   in with the shared installer and sign-in script. That `thoryn project init config`'s output (template plus
   seeds) loads as tenant files and passes `thoryn provision workflow check` is pinned in thoryn-cli

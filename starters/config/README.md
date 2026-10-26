@@ -13,6 +13,34 @@ application project declares its own OAuth client in its own `thoryn.io/applicat
 refuses an `application` in a tenant file. So when this project changes the sign-in configuration, or
 activates a custom domain, no application repository has to change.
 
+## What the template starts with
+
+The setup must change nothing that already exists in your workspace. So both `provision.yaml` files start with
+**only the sandbox environment the setup created** (or the existing sandbox you chose), declared by its slug:
+
+- the production section **owns** it (`retain: true`: `destroy` and `--prune` never remove it);
+- the sandbox section **depends** on it (`readOnly: true`): plan reads it, apply never writes it.
+
+Everything else — login methods, branding, the email provider, identity providers, test users, roles, trusts,
+the custom domain — is a **commented example**. Merging the setup pull request therefore changes nothing: its
+apply finds the sandbox as declared.
+
+What your workspace already has arrives in a **second pull request** that Thoryn opens after you merge the setup
+one: *Thoryn: your workspace's current configuration*. It fills both sections in with the live state; its plan
+shows every row unchanged, and its merge changes nothing. A new workspace has nothing more to import, so no second
+pull request is opened. Where the Thoryn GitHub App does not open it yet, render it yourself, signed in as a
+workspace admin:
+
+```bash
+thoryn login --workspace <workspace>
+thoryn provision import --file .thoryn/environments/production/provision.yaml          # prints; --write appends
+```
+
+Move each sandbox's entries to that sandbox's section, and drop any `kind: application` entry: an application
+belongs to its own app project, and a tenant file refuses it.
+
+From then on, this repository is how the workspace's configuration changes.
+
 ## Layout
 
 One section per connection. A connection is a workload identity trust, declared in `.thoryn/template.json`.
@@ -68,10 +96,11 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
 
 ## Making changes
 
-1. Edit the section's `provision.yaml`. The commented examples show the branding, email-provider,
-   identity-provider, test-user and custom-domain resources.
-2. If a new resource needs a scope the connection does not have yet, add it to the trust and to the
-   section's `connection.json`. For example, `emailProvider` needs `tenant:email.read` and
+1. Edit the section's `provision.yaml`. The commented examples show the login-methods, branding,
+   email-provider, identity-provider, role, test-user, trust and custom-domain resources.
+2. Both connections hold read and write for every tenant kind (`.thoryn/template.json`), so no resource
+   needs a new scope. A project created before SSO-3993 has narrower trusts: add the missing scope to the
+   trust and to the section's `connection.json`. For example, `emailProvider` needs `tenant:email.read` and
    `tenant:email.write`. `thoryn provision workflow check` names a missing scope before any run does. A trust
    can only be given scopes the admin changing it holds:
    ```bash
@@ -90,18 +119,21 @@ Removing a resource from a file does not delete it: removals are never automated
 
 1. Declare it in `.thoryn/environments/production/provision.yaml` (a `kind: environment` resource) and
    merge. Production creates it.
-2. Create a workload identity trust in it for this repository, with the `sandbox` connection's scopes, and
-   make its client manager of the sandbox:
+2. Create a workload identity trust in it for this repository, with the `sandbox` connection's scopes (read
+   and write for every tenant kind), and make its client manager of the sandbox:
    ```bash
+   scopes=()
+   for area in workload-identity access environments applications users idp federation email domains roles; do
+     scopes+=(--scope "tenant:$area.read" --scope "tenant:$area.write")
+   done
    thoryn workload-identity trusts create --environment <slug> --name <repository> \
-     --repository <owner>/<repository> \
-     --scope tenant:environments.read --scope tenant:idp.read --scope tenant:idp.write \
-     --scope tenant:access.read
+     --repository <owner>/<repository> "${scopes[@]}"
    thoryn access grant client:<its wi_… clientId> manager environment:<the sandbox id>
    ```
    `trusts create` prints the section's `connection.json`.
 3. Add `.thoryn/environments/<slug>/provision.yaml` and that `connection.json`, and list the pair under
-   `files:` in `.thoryn/workflow.yaml`.
+   `files:` in `.thoryn/workflow.yaml`. Start the file like the sandbox section: the sandbox itself,
+   `readOnly: true`, then its configuration, each entry with `environment: <slug>`.
 
 ## Custom domain
 
