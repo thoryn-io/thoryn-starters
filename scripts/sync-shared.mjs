@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The application starters share their e2e journey, the CI scripts, app-env.mjs, the template declaration
-// (.thoryn/template.json) and their provisioning file. The config starter shares the CLI installer and the
-// variable / sign-in scripts.
+// (.thoryn/template.json) and their provisioning file. The config starter shares nothing (SSO-3971): it carries no
+// CI script — its provisioning workflow is the stub `thoryn project init config` / the Thoryn GitHub App seeds,
+// which calls thoryn-cli's reusable workflow.
 // `shared/` is the single source; this script copies it into every application starter. The published
 // templates must be self-contained, so the copies are committed — and `--check` (CI) fails on any drift.
 //
@@ -39,12 +40,9 @@ function files(path) {
   return out;
 }
 
-/** The config starter shares the CLI installer and the variable / sign-in scripts (not the app's steps). */
-const CONFIG_MAPPINGS = ["install-cli.sh", "require-vars.sh", "gate.sh", "login.sh"].map((f) => [`thoryn/ci/${f}`, `.thoryn/ci/${f}`]);
-
 export function plan() {
   const pairs = [];
-  const targets = [...APPLICATION_STARTERS.map((s) => [s, MAPPINGS]), ["config", CONFIG_MAPPINGS]];
+  const targets = APPLICATION_STARTERS.map((s) => [s, MAPPINGS]);
   for (const [starter, mappings] of targets) {
     const dir = join(root, "starters", starter);
     if (!existsSync(dir)) continue;

@@ -12,9 +12,14 @@
 //    connection names, and its client accepts the app's default local callbacks (SSO-3445); plain-http
 //    redirect URIs are loopback-only and only ever on a sandbox client, never on production; a CONFIG project's production section declares every sandbox, and each sandbox
 //    section converges only its own sandbox;
-//  - the workflows read only declared variables (plus THORYN_CLI_VERSION and, for an application, the
-//    production client id the workspace's config project publishes), read every one of them, request
-//    `id-token: write`, read no secret, and run the shared CI steps;
+//  - an APPLICATION project's workflows read only declared variables (plus THORYN_CLI_VERSION and the production
+//    client id the workspace's config project publishes), read every one of them, request `id-token: write`, read
+//    no secret, and run the shared CI steps;
+//  - SSO-3971: a CONFIG project is TENANT provisioning — every section declares `apiVersion: thoryn.io/tenant/v1` —
+//    and ships NO workflow, CI script, `.thoryn/workflow.yaml` or `connection.json`: the creation flow (`thoryn
+//    project init config`, or the Thoryn GitHub App) seeds the provisioning stub, its run-time configuration and each
+//    connection's contract. A template workflow would win over the App's seeded stub (it writes only where no file
+//    exists) and would converge the workspace a second time next to the stub;
 //  - an APPLICATION project's production deploy job (SSO-3666) reads vars.THORYN_PRODUCTION_CLIENT_ID in the
 //    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
 //    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
@@ -73,6 +78,8 @@ export const PRODUCTION_GITHUB_ENVIRONMENT = "production";
  * declared.
  */
 const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION", PRODUCTION_CLIENT_ID_VARIABLE]);
+/** SSO-3971 — the part a config project's sections declare (thoryn-cli SSO-3962, oauthy ADR 2026-10-25). */
+export const TENANT_API_VERSION = "thoryn.io/tenant/v1";
 const APP_KINDS = new Set(["application", "user"]);
 /** Every application starter listens on 127.0.0.1:8080 by default (PORT / APP_BASE_URL override it). */
 export const LOCAL_PORT = 8080;
@@ -168,6 +175,12 @@ export function checkStarter(dir, schemas) {
       if (!declared[m[1]] && !RUNTIME_ENV.has(m[1])) fail(`${c.provisionFile}: {{env.${m[1]}}} is neither a declared variable nor a run-time value`);
     }
     const resources = doc?.resources ?? [];
+    if (manifest.kind === "config" && doc?.apiVersion !== TENANT_API_VERSION) {
+      fail(`${c.provisionFile}: a config section is tenant provisioning — apiVersion must be ${TENANT_API_VERSION}, not ${doc?.apiVersion}`);
+    }
+    if (manifest.kind === "config" && existsSync(join(dir, dirname(c.provisionFile), "connection.json"))) {
+      fail(`${dirname(c.provisionFile)}/connection.json is seeded by the creation flow (it names the repository's own trust); the template must not carry one`);
+    }
     if (!c.production) {
       for (const r of resources) {
         if (r.kind === "environment") fail(`${c.provisionFile}: a sandbox connection must not declare an environment (production does)`);
@@ -223,50 +236,54 @@ export function checkStarter(dir, schemas) {
   // Workflows.
   const wfDir = join(dir, ".github/workflows");
   const workflows = existsSync(wfDir) ? readdirSync(wfDir).filter((f) => /\.ya?ml$/.test(f)) : [];
-  if (!workflows.length) fail("no GitHub Actions workflow");
-  const read = new Set();
-  let text = "";
-  for (const wf of workflows) {
-    const t = readFileSync(join(wfDir, wf), "utf8");
-    text += t;
-    for (const m of t.matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      read.add(m[1]);
-      if (!declared[m[1]] && !OPTIONAL_VARS.has(m[1])) fail(`${wf} reads vars.${m[1]}, which template.json does not declare`);
-    }
-    if (/secrets\./.test(t)) fail(`${wf} reads a repository secret; the starters are secret-less`);
-  }
-  for (const name of Object.keys(declared)) if (!read.has(name)) fail(`no workflow reads vars.${name}`);
-  if (workflows.length && !/id-token:\s*write/.test(text)) fail("the workflow never requests id-token: write");
-  if (workflows.length && !text.includes(".thoryn/ci/gate.sh")) fail("the workflow does not gate on .thoryn/ci/gate.sh");
-  for (const [name] of connections) {
-    if (workflows.length && !text.includes(`.thoryn/ci/login.sh ${name}`) && manifest.kind === "config") fail(`the workflow never signs in as connection ${name}`);
-  }
-  if (manifest.kind === "application") {
-    for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
-      if (!text.includes(`.thoryn/ci/${step}`)) fail(`the workflow does not run .thoryn/ci/${step}`);
-    }
-    // SSO-3666 — the production deploy skeleton: reads the published client id in the `production` GitHub
-    // environment, resolves its settings in production mode, and holds no Thoryn identity.
-    if (!read.has(PRODUCTION_CLIENT_ID_VARIABLE)) fail(`no workflow reads vars.${PRODUCTION_CLIENT_ID_VARIABLE} (the production deploy job)`);
-    if (!text.includes("app-env.mjs --production")) fail("no workflow runs .thoryn/app-env.mjs --production (the production deploy job)");
-    let productionJobs = 0;
+  if (manifest.kind === "config") {
+    // SSO-3971 — the creation flow seeds the provisioning stub and its configuration; the template carries no CI of its own.
+    for (const wf of workflows) fail(`.github/workflows/${wf}: a config template ships no workflow — the creation flow seeds the provisioning stub (.github/workflows/thoryn-provisioning.yml), which calls thoryn-cli's reusable workflow`);
+    if (existsSync(join(dir, ".thoryn/workflow.yaml"))) fail(".thoryn/workflow.yaml is seeded by the creation flow (it names each section with its seeded connection.json); the template must not carry one");
+    if (existsSync(join(dir, ".thoryn/ci"))) fail(".thoryn/ci/ is gone from the config template: its provisioning runs in thoryn-cli's reusable workflow, not in scripts");
+  } else {
+    if (!workflows.length) fail("no GitHub Actions workflow");
+    const read = new Set();
+    let text = "";
     for (const wf of workflows) {
-      const doc = YAML.parse(readFileSync(join(wfDir, wf), "utf8"));
-      for (const [jobName, job] of Object.entries(doc?.jobs ?? {})) {
-        const environment = typeof job?.environment === "string" ? job.environment : job?.environment?.name;
-        if (environment !== PRODUCTION_GITHUB_ENVIRONMENT) continue;
-        productionJobs++;
-        const permissions = { ...(doc.permissions ?? {}), ...(job.permissions ?? {}) };
-        if (permissions["id-token"] === "write") fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and requests id-token: write; an application repository has no production identity`);
-        for (const step of job.steps ?? []) {
-          const run = typeof step?.run === "string" ? step.run : "";
-          if (/login\.sh|thoryn login|provision\.sh|thoryn provision/.test(run)) {
-            fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and signs in to or provisions Thoryn; production is converged by the config project only`);
+      const t = readFileSync(join(wfDir, wf), "utf8");
+      text += t;
+      for (const m of t.matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+        read.add(m[1]);
+        if (!declared[m[1]] && !OPTIONAL_VARS.has(m[1])) fail(`${wf} reads vars.${m[1]}, which template.json does not declare`);
+      }
+      if (/secrets\./.test(t)) fail(`${wf} reads a repository secret; the starters are secret-less`);
+    }
+    for (const name of Object.keys(declared)) if (!read.has(name)) fail(`no workflow reads vars.${name}`);
+    if (workflows.length && !/id-token:\s*write/.test(text)) fail("the workflow never requests id-token: write");
+    if (workflows.length && !text.includes(".thoryn/ci/gate.sh")) fail("the workflow does not gate on .thoryn/ci/gate.sh");
+    if (manifest.kind === "application") {
+      for (const step of ["install-cli.sh", "provision.sh", "start-app.sh", "teardown.sh"]) {
+        if (!text.includes(`.thoryn/ci/${step}`)) fail(`the workflow does not run .thoryn/ci/${step}`);
+      }
+      // SSO-3666 — the production deploy skeleton: reads the published client id in the `production` GitHub
+      // environment, resolves its settings in production mode, and holds no Thoryn identity.
+      if (!read.has(PRODUCTION_CLIENT_ID_VARIABLE)) fail(`no workflow reads vars.${PRODUCTION_CLIENT_ID_VARIABLE} (the production deploy job)`);
+      if (!text.includes("app-env.mjs --production")) fail("no workflow runs .thoryn/app-env.mjs --production (the production deploy job)");
+      let productionJobs = 0;
+      for (const wf of workflows) {
+        const doc = YAML.parse(readFileSync(join(wfDir, wf), "utf8"));
+        for (const [jobName, job] of Object.entries(doc?.jobs ?? {})) {
+          const environment = typeof job?.environment === "string" ? job.environment : job?.environment?.name;
+          if (environment !== PRODUCTION_GITHUB_ENVIRONMENT) continue;
+          productionJobs++;
+          const permissions = { ...(doc.permissions ?? {}), ...(job.permissions ?? {}) };
+          if (permissions["id-token"] === "write") fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and requests id-token: write; an application repository has no production identity`);
+          for (const step of job.steps ?? []) {
+            const run = typeof step?.run === "string" ? step.run : "";
+            if (/login\.sh|thoryn login|provision\.sh|thoryn provision/.test(run)) {
+              fail(`${wf}: job ${jobName} runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} and signs in to or provisions Thoryn; production is converged by the config project only`);
+            }
           }
         }
       }
+      if (!productionJobs) fail(`no workflow job runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} (the production deploy job)`);
     }
-    if (!productionJobs) fail(`no workflow job runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} (the production deploy job)`);
   }
   // SSO-3445 — the generated local test user (.thoryn/local.env) must never be committed.
   const gitignore = existsSync(join(dir, ".gitignore")) ? readFileSync(join(dir, ".gitignore"), "utf8").split("\n") : [];

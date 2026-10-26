@@ -1,7 +1,7 @@
 // SSO-3428 — the validator is the gate that keeps the starters unrendered and on the variable contract.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,4 +135,45 @@ test("the published production client id is read without being declared: the cre
     return m;
   });
   assert.match(checkStarter(dir, schemas).join("\n"), /declares THORYN_PRODUCTION_CLIENT_ID, which is not in the application contract/);
+});
+
+// SSO-3971 — the config starter is TENANT provisioning in the stub shape: the creation flow seeds the stub, its
+// configuration and each connection's contract, so the template carries none of them.
+test("a config section must declare apiVersion thoryn.io/tenant/v1", () => {
+  const dir = copy("config");
+  edit(dir, ".thoryn/environments/sandbox/provision.yaml", (t) => t.replace("apiVersion: thoryn.io/tenant/v1", "apiVersion: thoryn.io/provision/v1"));
+  assert.match(checkStarter(dir, schemas).join("\n"), /sandbox\/provision\.yaml: a config section is tenant provisioning — apiVersion must be thoryn\.io\/tenant\/v1, not thoryn\.io\/provision\/v1/);
+});
+
+test("a config template ships no workflow, no CI script, no workflow.yaml and no connection.json — the creation flow seeds them", () => {
+  const dir = copy("config");
+  mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+  writeFileSync(join(dir, ".github/workflows/thoryn.yml"), "name: Thoryn configuration\non: push\njobs: {}\n");
+  writeFileSync(join(dir, ".github/workflows/thoryn-provisioning.yml"), "name: Thoryn provisioning\n");
+  mkdirSync(join(dir, ".thoryn/ci"));
+  writeFileSync(join(dir, ".thoryn/ci/login.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, ".thoryn/workflow.yaml"), "apiVersion: thoryn.io/workflow/v1\n");
+  writeFileSync(join(dir, ".thoryn/environments/production/connection.json"), "{}\n");
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /\.github\/workflows\/thoryn\.yml: a config template ships no workflow/);
+  assert.match(problems, /\.github\/workflows\/thoryn-provisioning\.yml: a config template ships no workflow/);
+  assert.match(problems, /\.thoryn\/ci\/ is gone from the config template/);
+  assert.match(problems, /\.thoryn\/workflow\.yaml is seeded by the creation flow/);
+  assert.match(problems, /\.thoryn\/environments\/production\/connection\.json is seeded by the creation flow/);
+});
+
+test("the pre-split config template (variable-driven thoryn.yml, .thoryn/ci, provision/v1) fails the check", () => {
+  // The shape thoryn-starters published until SSO-3971 (commit eb4a2f6): the control for the two tests above.
+  const dir = copy("config");
+  for (const section of ["production", "sandbox"]) {
+    edit(dir, `.thoryn/environments/${section}/provision.yaml`, (t) => t.replace("apiVersion: thoryn.io/tenant/v1", "apiVersion: thoryn.io/provision/v1"));
+  }
+  mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+  writeFileSync(join(dir, ".github/workflows/thoryn.yml"), "name: Thoryn configuration\non: push\npermissions:\n  id-token: write\njobs: {}\n");
+  mkdirSync(join(dir, ".thoryn/ci"));
+  cpSync(join(root, "shared/thoryn/ci/login.sh"), join(dir, ".thoryn/ci/login.sh"));
+  const problems = checkStarter(dir, schemas);
+  assert.equal(problems.filter((p) => /apiVersion must be thoryn\.io\/tenant\/v1/.test(p)).length, 2);
+  assert.ok(problems.some((p) => /thoryn\.yml: a config template ships no workflow/.test(p)), problems.join("\n"));
+  assert.ok(problems.some((p) => /\.thoryn\/ci\/ is gone/.test(p)), problems.join("\n"));
 });

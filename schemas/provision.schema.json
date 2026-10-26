@@ -7,13 +7,52 @@
   "additionalProperties": false,
   "required": ["apiVersion", "resources"],
   "properties": {
-    "apiVersion": { "const": "thoryn.io/provision/v1" },
+    "apiVersion": {
+      "description": "The PART this file is (SSO-3962, oauthy ADR 2026-10-25 provisioning-is-tenant-and-applications): `thoryn.io/tenant/v1` — TENANT provisioning, written by the workspace's ONE config project (environments, identity sources, users incl. sandbox test users, login methods / flows / theme, email provider, custom domain, roles, and the workload identity trusts of the workspace's app projects); `thoryn.io/application/v1` — APPLICATION provisioning, written by an app project (its `application`, with `tokenClaims` / `roleMapping` naming roles the tenant defines). An application is a USER of the tenant: it references roles and environments by name and defines nothing about them; a kind from the other part is refused. `thoryn.io/provision/v1` is the original mixed format, accepted for one more release with a warning naming the part the file should declare (`thoryn provision split` writes the two files).",
+      "enum": ["thoryn.io/tenant/v1", "thoryn.io/application/v1", "thoryn.io/provision/v1"]
+    },
     "resources": {
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/resource" }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "apiVersion": { "const": "thoryn.io/tenant/v1" } } },
+      "then": {
+        "properties": {
+          "resources": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "description": "SSO-3962 — a TENANT file declares tenant kinds only; `application` is application provisioning and belongs in the app project's own thoryn.io/application/v1 file.",
+                  "enum": ["environment", "federationMember", "user", "loginMethods", "loginFlow", "loginTheme", "emailProvider", "customDomain", "role", "workloadIdentityTrust"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "apiVersion": { "const": "thoryn.io/application/v1" } } },
+      "then": {
+        "properties": {
+          "resources": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "description": "SSO-3962 — an APPLICATION file declares `application` only; every other kind is tenant provisioning and belongs in the workspace's config project (thoryn.io/tenant/v1).",
+                  "enum": ["application"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "resource": {
       "type": "object",
@@ -21,8 +60,8 @@
       "required": ["kind", "spec"],
       "properties": {
         "kind": {
-          "description": "CLOSED allowlist of resource kinds, each mapping to one supported product API. `emailProvider`, `loginTheme`, `loginFlow` and `loginMethods` are singletons per environment (no `name` needed). `loginMethods` (SSO-3100) is the sign-in METHOD allow-list the hosted login offers (`PUT /api/v1/login-methods`; `destroy` resets it to the default via `DELETE`). `user` exists so a scenario can declare its test account; a customer's real users self-register.",
-          "enum": ["environment", "application", "emailProvider", "loginTheme", "loginFlow", "loginMethods", "federationMember", "user"]
+          "description": "CLOSED allowlist of resource kinds, each mapping to one supported product API. `emailProvider`, `loginTheme`, `loginFlow` and `loginMethods` are singletons per environment (no `name` needed). `loginMethods` (SSO-3100) is the sign-in METHOD allow-list the hosted login offers (`PUT /api/v1/login-methods`; `destroy` resets it to the default via `DELETE`). `user` exists so a scenario can declare its test account; a customer's real users self-register. `customDomain` (SSO-3413) is the workspace's ONE custom domain (`/api/v1/custom-domain`): workspace-level (no `environment`) and a singleton (no `name` needed). `plan` shows the DNS records to publish, `apply` claims `spec.host` and verifies it, and only `--prune` / `destroy` with `--confirm <workspace-slug>` release it. The signed-in identity needs `tenant:domains.*` and, unless it is a workspace admin, an explicit grant (`thoryn access grant client:<id> manager custom_domain:<workspace-id>`). `workloadIdentityTrust` (SSO-3689; ADR 2026-10-14 credential ladder) is a workload-identity TRUST of the resource's environment (`/api/v1/workload-identity/trusts`): the identity a CI job or a pod presents instead of a secret, by `provider` (`github_actions` | `forgejo` | `kubernetes`) with that provider's pins. Converged by `name`; the hub's pins are IMMUTABLE, so a declared pin that differs from the live trust is the plan error `workload_identity_trust_immutable` (delete and re-create, or declare what is live) — with ONE additive exception (SSO-3702): a `github_actions` trust's `spec.plan` profile declared on a live trust that has none is added in place (`POST …/plan-profile`, the `wi_` client stays). Its `scopes` (and a live profile's `plan.scopes`) change IN PLACE (SSO-3925, `PUT …/scopes`, the `wi_` client stays): a narrowing converges from CI; a widening is a person's act with a fresh passkey sign-in (`elevated_action_requires_person` from a `client:` identity). An `application` binds one by NAME through `spec.federatedTrust`. The identity applying a file cannot declare its OWN bootstrap trust (chicken-and-egg): that first trust is created once by a person; everything else is declared. SSO-3774 (oauthy ADR 2026-10-16 repository-owned workload identity trusts): a trust is the platform object `trust:<id>` with one `owner` — gated per object (the relation on the trust unioned with its environment's; `access_owned_elsewhere` when another repository owns it), removed by `destroy` / `--prune` when this identity OWNS it; a declared trust this identity cannot see is `access_not_reachable` (fix: `owner` on the trust by name); and a PRODUCTION-plane trust is created by a person, never from CI (`workload_identity_trust_production_needs_person`): a workspace admin applies the file once, then grants the repository `owner trust:<id>`. `role` (SSO-3941) is an RBAC ROLE of the resource's environment (`/api/v1/roles`): its `name` is the role's name, `spec.permissions` the full set of permission names it grants (a missing workspace permission is created). Not a platform access object — product-api gates it on `tenant:roles.*` alone — so it has no ownership verdict, cannot carry `grants:`, and (like `user`) goes with its sandbox and is never removed on the production plane.",
+          "enum": ["environment", "application", "emailProvider", "loginTheme", "loginFlow", "loginMethods", "federationMember", "user", "customDomain", "workloadIdentityTrust", "role"]
         },
         "name": {
           "description": "Stable converge key (unique per kind within the file). Required for every non-singleton kind.",
@@ -30,7 +69,7 @@
           "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
         },
         "environment": {
-          "description": "The environment this resource lives in: the `name` of an `environment` resource in this file, or the slug of an environment that already exists. Omitted ⇒ the workspace's production plane. Not allowed on an `environment` resource.",
+          "description": "The environment this resource lives in: the `name` of an `environment` resource in this file, or the slug of an environment that already exists. May be a `{{env.NAME}}` placeholder, resolved from the environment when the file is read (an unset variable is an error). Omitted ⇒ the workspace's production plane. Not allowed on an `environment` resource.",
           "type": "string",
           "minLength": 1
         },
@@ -39,8 +78,74 @@
           "type": "object",
           "propertyNames": { "not": { "pattern": "([Pp]assword|[Ss]ecret|[Tt]oken)$" } }
         },
+        "readOnly": {
+          "description": "SSO-3659 (ADR 2026-10-13 §1) — `true` declares that this repository DEPENDS ON the resource and does not own it. `plan` / `apply` look it up live and require it to MATCH the declared spec: any field difference is the plan error `access_read_only` (non-zero exit; `apply` refuses before writing anything). A read-only reference is never created or removed, and `viewer` reach on it suffices (an OWNED resource — the default — needs `manager`, held directly or inherited from its environment / workspace; see `thoryn access`). It cannot carry `grants`, `publishTo`, `secretSink` or `retain`. `thoryn provision import` renders a resource the repository may only view this way.",
+          "type": "boolean",
+          "default": false
+        },
+        "retain": {
+          "description": "SSO-3715 (ADR 2026-10-15 platform-is-the-ledger §1) — `true` means \"mine, keep\": the file converges and owns the resource, but `thoryn provision destroy` and `apply --prune` never remove it — the destroy plan shows it as retained, with the command a person would run instead. Terraform's `prevent_destroy`. There is no committed receipt and no adopted bit any more: what `destroy` may remove is decided by the platform's `owner` relation (a `client:` identity removes only what it OWNS; a person removes only what they manage and nobody owns), and `retain` is how the reviewed file says that an owned resource is to stay regardless. Refused on a `readOnly` reference (never removed anyway).",
+          "type": "boolean",
+          "default": false
+        },
+        "publishTo": {
+          "description": "SSO-3668 (ADR 2026-10-13 production-clients-declared-in-the-config-project §2) — where `apply` PUBLISHES this resource's id once it is converged. `application` only: the clientId is the one output a resource has, and it is public by construction (it appears in every authorization URL) — so a target is always a VARIABLE, never a secret. Published on EVERY apply (an upsert, so a re-created client propagates without a second step), AFTER the resource is converged. A target the signed-in credential cannot reach is the apply error `publish_target_unreachable`: the client exists, `apply --output json` carries its id, and the error names the one `gh variable set` a human can run. `plan` prints the pending publish as a line. Refused on a `readOnly` reference (it publishes nothing — the owning repository publishes).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "repository", "environment", "name"],
+            "properties": {
+              "kind": { "description": "`githubActionsVariable`: an Actions variable on a GitHub repository's environment, upserted with `gh variable set <name> --body <clientId> --repo <repository> --env <environment>` (the environment is created when absent; an existing environment's protection is never touched).", "enum": ["githubActionsVariable"] },
+              "repository": { "description": "The target repository as `owner/name` (for a production client: the application repository the config project publishes to).", "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$" },
+              "environment": { "description": "The target repository's GitHub environment (e.g. `production`); only a job targeting it reads the variable.", "type": "string", "minLength": 1 },
+              "name": { "description": "The Actions variable name, e.g. `THORYN_PRODUCTION_CLIENT_ID`. GitHub reserves the `GITHUB_` prefix.", "type": "string", "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]*$" }
+            }
+          }
+        },
+        "secretSink": {
+          "description": "SSO-3659 (ADR 2026-10-13 converge §5 — secrets are delivered where they are consumed, never into a CI secret store; production-clients ADR §3 tier 3) — WHERE `apply` DELIVERS the one-time `client_secret` a confidential `application` is minted with, the moment the client is converged. SSO-3954 (oauthy ADR 2026-10-14 amended 2026-10-25, SSO-3951 — Thoryn owns the secret lifecycle: mint, show once, rotate with the 24 h overlap, revoke, audit; the CUSTOMER owns delivery into its runtime) — `customerManaged`, THE DEFAULT when `secretSink` is omitted: `apply` discards the one-time value the create returns (never printed, written, logged or handed to a sink), grants nothing to anyone, and `plan` prints the runbook: a person mints the secret with `thoryn clients rotate-secret <clientId> --secret-file <path>` and stores it in the customer's own secret infrastructure (Vault / OpenBao, a cloud secret manager, External Secrets, an operator-created Kubernetes Secret). Nothing is undelivered, so a CI apply with no secret channel creates the application and exits 0. `kubernetesSecret` (an OPERATOR's apply with a kubectl context): `data.<key>` of the Kubernetes Secret `<namespace>/<name>`, written through your own `kubectl` (`kubectl -n <namespace> create secret generic <name> --from-file=<key>=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -` — the value rides on stdin, never on argv; the namespace must already exist, it is never created). `file`: an owner-only (`0600`) file at `path`, never overwritten unless `apply --force`. For those two the secret itself never enters this file, the plan or a log; a target that cannot be reached falls back to `apply --secret-file` / an interactive TTY and, when nothing reaches, is the apply error `undelivered_secrets`: the client exists, the exit is non-zero, and the recovery is `thoryn clients rotate-secret <clientId> --secret-file <path>`. `plan` prints the intended delivery as a line (no secret exists at plan time). Only on `kind: application`, only when the client is confidential (`clientType: public` is minted nothing), and never on a `readOnly` reference. `workloadPull` (SSO-3921; oauthy ADR 2026-10-14 credential ladder, rung 3 \"runtime pull\") — DEPRECATED (SSO-3951; SSO-3953 removes it; still converged, with a warning on every plan and apply): delivered NOWHERE. `apply` discards the minted value and converges `manager` on the application for the `wi_` workload client of the `workloadIdentityTrust` named by `trust`; that workload's pod signs in with its projected ServiceAccount token and mints its own (`thoryn clients rotate-secret <clientId> --secret-file …` in an init container). The trust must live on the application's plane (`workload_pull_trust_other_plane`), be `provider: kubernetes` (`workload_pull_trust_not_kubernetes`) and carry `tenant:applications.write` (`workload_pull_scope_missing`); one that is neither declared in this file nor live is `workload_pull_trust_not_found`. `plan` prints `secret: pulled at runtime by trust <name>` on every apply of the application. To leave it: drop the sink (the default takes over), then a person revokes the trust's `manager` grant (`thoryn access revoke client:<wi_…> manager application:<clientId>`) and deletes the trust (`thoryn workload-identity trusts delete <id>`) — dropping the sink alone revokes and deletes nothing.",
+          "type": "object",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "required": ["kind", "namespace", "name", "key"],
+              "properties": {
+                "kind": { "const": "kubernetesSecret" },
+                "namespace": { "description": "An EXISTING Kubernetes namespace (RFC 1123 label); thoryn never creates one.", "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" },
+                "name": { "description": "The Secret to write (RFC 1123 subdomain, ≤ 253).", "type": "string", "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" },
+                "key": { "description": "The Secret's `data` key, e.g. `client-secret`.", "type": "string", "maxLength": 253, "pattern": "^[-._a-zA-Z0-9]+$" }
+              }
+            },
+            {
+              "additionalProperties": false,
+              "required": ["kind", "path"],
+              "properties": {
+                "kind": { "const": "file" },
+                "path": { "description": "The owner-only (`0600`) file the secret is written to; an existing file is not overwritten unless `apply --force`.", "type": "string", "minLength": 1 }
+              }
+            },
+            {
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {
+                "kind": { "description": "SSO-3954 — `customerManaged` (THE DEFAULT): the create's one-time value is discarded, nothing is granted; a person mints the secret with `thoryn clients rotate-secret` and stores it in the customer's own secret infrastructure.", "const": "customerManaged" }
+              }
+            },
+            {
+              "additionalProperties": false,
+              "required": ["kind", "trust"],
+              "properties": {
+                "kind": { "const": "workloadPull" },
+                "trust": { "description": "SSO-3921 — DEPRECATED (SSO-3951 / SSO-3953). The NAME of the `kubernetes` `workloadIdentityTrust` (declared in this file or live, on the application's plane) whose pods mint the secret at start; its workload client is converged `manager` on the application.", "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+              }
+            }
+          ]
+        },
         "grants": {
-          "description": "SSO-3113 (epic SSO-3108) — least-privilege ACCESS GRANTS on this resource, converged with it by `apply`: a listed grant that is missing is created, a grant on this object the file no longer lists is revoked (the workspace admin userset `workspace:<id>#admin` is never revoked; grants on objects the file does not own are never touched). The OBJECT is implicit — it derives from the receipt id (`environment:<id>`, `application:<clientId>`, `user:<id>`, `federation_member:<id>`, `<singleton>:<envSlug>`). Omit to leave the object's grants unmanaged; `[]` declares none. Needs `tenant:access.write` (a session without it fails closed).",
+          "description": "SSO-3113 (epic SSO-3108) — least-privilege ACCESS GRANTS on this resource, converged with it by `apply`: a listed grant that is missing is created, a grant on this object the file no longer lists is revoked (the workspace admin userset `workspace:<id>#admin` is never revoked; grants on objects the file does not own are never touched). The OBJECT is implicit — it derives from the live id the resource resolves to (`environment:<id>`, `application:<clientId>`, `user:<id>`, `federation_member:<id>`, `<singleton>:<envSlug>`, `custom_domain:<workspace-id>`). Omit to leave the object's grants unmanaged; `[]` declares none. Needs `tenant:access.write` (a session without it fails closed).",
           "type": "array",
           "uniqueItems": true,
           "items": {
@@ -49,7 +154,7 @@
             "required": ["subject", "relation"],
             "properties": {
               "subject": { "description": "`member:<sub>` or `client:<clientId>`.", "type": "string", "pattern": "^(member|client):[^\\s]+$" },
-              "relation": { "enum": ["manager", "viewer"] }
+              "relation": { "description": "`manager` or `viewer`. SSO-3673: `owner` is a platform relation (one owning repository per application / environment) but is NOT accepted here — a repository cannot claim ownership by writing YAML; a workspace admin grants it with `thoryn access grant <subject> owner <object>`.", "enum": ["manager", "viewer"] }
             }
           }
         }
@@ -62,7 +167,31 @@
                                 "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|.*\\{\\{\\s*env\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\}\\}.*)$" },
                       "displayName": { "type": "string" } } } } } },
         { "if": { "properties": { "kind": { "const": "application" } } },
-          "then": { "required": ["name"], "properties": { "spec": { "type": "object", "required": ["displayName"] } } } },
+          "then": { "required": ["name"], "properties": { "spec": { "type": "object", "required": ["displayName"], "properties": {
+                      "clientAuthenticationMethods": { "description": "SSO-3689 (ADR 2026-10-14 credential ladder) — how the client authenticates at the token endpoint, as the hub's method tokens: `private_key_jwt` (rung 1: the app's own key pair; `jwksUri` or inline `jwks` REQUIRED), `federated_assertion` (rung 2: the workload's platform identity token is the client assertion; ALWAYS the only method, `federatedTrust` REQUIRED, no key, no secret, `authorization_code` / `refresh_token` only, PKCE stays required, never `clientType: public`), `client_secret_basic` (a Thoryn-minted secret; the only method a `secretSink:` is legal with), `none` (a public client). `client_secret_post` is deliberately NOT declarable: a secret in the request body is the courier rung. Omitted ⇒ product-api's default for the `clientType` (`client_secret_basic` for confidential, `none` for public). Converged on UPDATE together with `jwksUri` / `jwks` / `federatedTrust`.",
+                                                       "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["private_key_jwt", "federated_assertion", "client_secret_basic", "none"] } },
+                      "jwksUri": { "description": "Where the client's PUBLIC keys are fetched for `private_key_jwt` (HTTPS). Exactly one of `jwksUri` and `jwks`. The API does not render the key location yet (SSO-3716), so it is never diffed: it is sent on create and re-sent, idempotently, with every update of the client — a changed key location alone plans no update until product-api renders it.", "type": "string", "pattern": "^https://" },
+                      "jwks": { "description": "The client's PUBLIC JWK Set for `private_key_jwt`, inline (`{ keys: [ { kty, kid, … } ] }`): RSA / EC keys with a `kid`, NO private parameters (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k` are refused). Exactly one of `jwksUri` and `jwks`.", "type": "object", "required": ["keys"], "properties": { "keys": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["kty", "kid"] } } } },
+                      "allowTokenExchange": { "description": "SSO-3767 (oauthy SSO-3758) — lets the application request an RFC 8693 token exchange (downscope a user's token for a downstream API, or enter another workspace the user belongs to). Default `false`. `true` needs a client that AUTHENTICATES (never `clientType: public` / method `none` — `token_exchange_requires_confidential_client`) and the `urn:ietf:params:oauth:grant-type:token-exchange` grant in `grantTypes` (`token_exchange_grant_required`); a `federated_assertion` client may then register that grant too. Turning it ON on an existing application needs `manager` on the application's ENVIRONMENT (the workspace on the production plane) — managing the application alone is not enough: the plan is red with `token_exchange_not_grantable` and the right that fixes it. Turning it off, omitting it (keeps the live value) or re-declaring the stored value is never refused. Converged on UPDATE.", "type": "boolean" },
+                      "allowedAuthorizationDetailTypes": { "description": "SSO-3766 (oauthy SSO-3759) — the RFC 9396 `authorization_details` types the application may send at `/oauth2/par` / `/oauth2/authorize`. Default `[]`. Converged as a SET on UPDATE: the declared list REPLACES the live one, `[]` clears it, omitting the field keeps it. A type the authorization server does not support is refused by the API (`unsupported_authorization_details_type`; the supported ones are its discovery `authorization_details_types_supported`, plus `thoryn_access_grant`), and `thoryn_access_grant` only for applications of the `thoryn` home workspace (`authorization_details_type_not_permitted`). One type per entry.", "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\S+$" } },
+                      "allowTokenIntrospection": { "description": "SSO-3810 (oauthy SSO-3810) — lets the application call RFC 7662 token introspection at its workspace (a resource server resolving the tokens it receives, opaque or JWT). The endpoint answers `active` only for tokens minted for the SAME workspace and environment; any other token is `{\"active\":false}`. Default `false`. `true` needs a client that AUTHENTICATES (never `clientType: public` / method `none` — `token_introspection_requires_confidential_client`). Turning it ON on an existing application needs `manager` on the application's ENVIRONMENT (the workspace on the production plane): the plan is red with `token_introspection_not_grantable` and the right that fixes it. Turning it off, omitting it (keeps the live value) or re-declaring the stored value is never refused. Converged on UPDATE.", "type": "boolean" },
+                      "accessTokenFormat": { "description": "SSO-3807 (oauthy SSO-3807) — the format of the access tokens this application receives: `self-contained` (a signed JWT, the default) or `reference` (an opaque value a resource server resolves through introspection, which needs an application with `allowTokenIntrospection`). Thoryn's own management API accepts self-contained tokens only. Applies to tokens issued after the change. Converged on UPDATE; omitted keeps the live value.", "enum": ["self-contained", "reference"] },
+                      "dpopAllowed": { "description": "SSO-3811 (oauthy SSO-3811) — DPoP (RFC 9449) opt-in: a proof that arrives BINDS the access token (`cnf.jkt`, `token_type: DPoP`); without it a proof is ignored for binding and the application receives Bearer tokens. Default `false`. Any client type. Converged on UPDATE; omitted keeps the live value.", "type": "boolean" },
+                      "tokenClaims": { "description": "SSO-3941 (oauthy SSO-1904) — claims in the token: which claim SOURCES the hub adds to this application's tokens (`/api/v1/applications/{clientId}/token-claims`). `sources` is the FULL set, compared as a set, and passed through as written — product-api decides which source names exist (`400 unsupported_claim_source`; today e.g. `permissions` — the user's effective RBAC permission names as claim `permissions` — `org`, `org_roles`, `pim`, `entitlements`, `guest`, `metadata:<key>`); omitted ⇒ `[permissions]` (the server's default). `{ enabled: false }` turns claims in the token OFF. Omit `tokenClaims` to leave whatever the platform holds. Converged on create and on update (`PUT` / `DELETE …/token-claims`, `tenant:applications.write`). SSO-3945 (oauthy SSO-3943): `roleMapping` maps a Thoryn role name to the value the application receives in its `roles` claim (source `roles`).", "type": "object", "additionalProperties": false,
+                                       "properties": { "sources": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+                                                       "enabled": { "type": "boolean" },
+                                                       "roleMapping": { "description": "SSO-3945 (oauthy SSO-3943) — role name → the value emitted in the application's `roles` ID-token claim, e.g. `{ forge-maintainer: Maintainers }`. Needs the `roles` source in `sources`. Present, it is an ALLOWLIST: only mapped roles are emitted, under their mapped values (`{}` lets none through). The platform's PUT REPLACES the whole configuration, so the mapping is sent with every PUT and an OMITTED `roleMapping` means NO mapping (every role name emitted as-is): a live mapping the file does not declare is REMOVED — the plan shows it as `roleMapping removed`. Compared as a map (key order is not drift). The rules are product-api's (`400 invalid_role_mapping`), checked by the file before any call: at most 100 entries; a key is a role name of 1–200 characters, not blank, without control characters; a value is a quoted string of 1–128 characters matching the pattern below and not starting with `tenant:` / `admin:` / `holder:` (any case).", "type": "object", "maxProperties": 100,
+                                                                        "propertyNames": { "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001F\\u007F]*[^\\s\\u0000-\\u001F\\u007F][^\\u0000-\\u001F\\u007F]*$" },
+                                                                        "additionalProperties": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$", "not": { "pattern": "^([Tt][Ee][Nn][Aa][Nn][Tt]|[Aa][Dd][Mm][Ii][Nn]|[Hh][Oo][Ll][Dd][Ee][Rr]):" } } } },
+                                       "allOf": [
+                                         { "if": { "properties": { "enabled": { "const": false } }, "required": ["enabled"] }, "then": { "not": { "anyOf": [ { "required": ["sources"] }, { "required": ["roleMapping"] } ] } } },
+                                         { "if": { "required": ["roleMapping"], "properties": { "roleMapping": { "type": "object" } } }, "then": { "required": ["sources"], "properties": { "sources": { "contains": { "const": "roles" } } } } }
+                                       ] },
+                      "dpopRequired": { "description": "SSO-3811 (oauthy SSO-3811) — every token request of the application must carry a valid DPoP proof (`invalid_dpop_proof` otherwise). Default `false`. Set it only once every installation sends a proof. Converged on UPDATE; omitted keeps the live value.", "type": "boolean" },
+                      "refreshTokenSlidingWindow": { "description": "SSO-3770 (oauthy SSO-3762) — cap the session at `refreshTokenAbsoluteMaxTtlSeconds` counted from sign-in, however active it is (a refresh after that is `invalid_grant`). Default `false`. Converged on UPDATE; omitted keeps the live value.", "type": "boolean" },
+                      "refreshTokenAbsoluteMaxTtlSeconds": { "description": "SSO-3770 (oauthy SSO-3762) — the absolute session lifetime in seconds, 3600 – 7776000 (1 h – 90 d; `token_ttl_out_of_range`). Declared WITH `refreshTokenSlidingWindow: true` (`session_lifetime_requires_sliding_window`) and at least `refreshTokenTtlSeconds` (`session_lifetime_below_refresh_ttl`); the API also caps it at the environment authentication policy's `refreshClipSeconds` (`session_exceeds_tenant_policy`, the cap in `max`). Default (live) 7776000. Converged on UPDATE; omitted keeps the live value.", "type": "integer", "minimum": 3600, "maximum": 7776000 },
+                      "federatedTrust": { "description": "SSO-3689 (ADR 2026-10-14 federated client authentication §11) — the NAME of a `workloadIdentityTrust` in the SAME environment (declared in this file, or one that already exists); the engine resolves it to the trust id before the create / update, and the API takes the id. Required with `federated_assertion`, refused without it (`federated_trust_without_method`); a missing or other-environment trust is the plan error `federated_trust_not_found`. SSO-3774: a trust declared in this file that the identity cannot see is `access_not_reachable` (fix: `owner` on the trust by name); setting or changing the binding needs `manager` on the trust (product-api SSO-3773) — else `access_not_owned` (fix `owner trust:<id>`) or `access_owned_elsewhere`.", "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+                    } } } } },
         { "if": { "properties": { "kind": { "const": "user" } } },
           "then": { "required": ["name"], "properties": { "spec": { "type": "object", "required": ["email"] } } } },
         { "if": { "properties": { "kind": { "const": "federationMember" } } },
@@ -74,7 +203,84 @@
         { "if": { "properties": { "kind": { "const": "loginMethods" } } },
           "then": { "properties": { "spec": { "type": "object", "required": ["methods"], "properties": {
                       "methods": { "description": "The FULL sign-in method allow-list, in display order (e.g. password, magic_link, magic_code, passkey, totp, sms); the server rejects an unknown token. Converged as a SET (order-insensitive).",
-                                   "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } } } } }
+                                   "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } } } } },
+        { "if": { "properties": { "kind": { "const": "customDomain" } } },
+          "then": { "not": { "required": ["environment"] },
+                    "properties": { "spec": { "type": "object", "additionalProperties": false, "required": ["host"], "properties": {
+                      "host": { "description": "The host to claim: a subdomain you control, e.g. `auth.acme.com` (the platform refuses apex domains, IP addresses and Thoryn domains).",
+                                "type": "string", "minLength": 1 },
+                      "acceptReSignIn": { "description": "Required `true` when the workspace already has production users: a custom domain changes the workspace's issuer, so every production user signs in again once. Recorded on the claim and in the audit log.",
+                                          "type": "boolean" } } } } } },
+        { "if": { "required": ["publishTo"] },
+          "then": { "properties": { "kind": { "const": "application" } } } },
+        { "if": { "properties": { "readOnly": { "const": true } }, "required": ["readOnly"] },
+          "then": { "not": { "required": ["publishTo"] } } },
+        { "if": { "required": ["secretSink"] },
+          "then": { "properties": { "kind": { "const": "application" } } } },
+        { "if": { "properties": { "readOnly": { "const": true } }, "required": ["readOnly"] },
+          "then": { "not": { "required": ["secretSink"] } } },
+        { "if": { "required": ["secretSink"] },
+          "then": { "properties": { "spec": { "not": { "properties": { "clientType": { "const": "public" } }, "required": ["clientType"] } } } } },
+        { "if": { "properties": { "kind": { "const": "workloadIdentityTrust" } } },
+          "then": { "required": ["name"], "not": { "anyOf": [ { "required": ["grants"] }, { "required": ["publishTo"] }, { "required": ["secretSink"] } ] },
+                    "properties": { "spec": { "type": "object", "additionalProperties": false, "required": ["provider", "scopes"], "properties": {
+                      "provider": { "description": "The workload's platform: `github_actions` (pin block `github`), `forgejo` (pin block `forgejo`) or `kubernetes` (pin block `kubernetes`). Exactly the provider's block is present.", "enum": ["github_actions", "forgejo", "kubernetes"] },
+                      "scopes": { "description": "The `tenant:` scopes a job / pod may obtain with this trust — a CEILING: the hub refuses a scope the applying identity does not itself hold (`403 scope_not_grantable`), so a trust can never widen the reach of the identity that declares it. Converged as a set.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^tenant:[a-z-]+\\.[a-z-]+$" } },
+                      "confirmProduction": { "description": "Required `true` for a trust on the PRODUCTION plane (no `environment`, or the `production` slug): its jobs / pods then act on production. The hub refuses without it (`production_confirmation_required`). Create-time only; never diffed.", "type": "boolean" },
+                      "plan": { "description": "SSO-3702 (SSO-3699 option B; oauthy ADR 2026-10-14-plan-identity-and-resource-ownership) — `github_actions` only: the trust's PLAN profile. ONE trust, ONE `wi_` client, two scope profiles: `github.environment` is the APPLY environment (the reviewed one, the trust's `scopes`); `plan.environment` is a SECOND, unprotected GitHub environment (e.g. `<apply>-plan`) whose jobs the hub mints READ-ONLY scopes only — `plan.scopes` when given (each a `tenant:<area>.read` member of `scopes`), else DERIVED by the hub as every `.read` member of `scopes`. The hub matches the job token's `environment` claim to either profile and mints only that profile's scopes (`invalid_scope`, `scope_outside_plan_profile`, for a plan job asking for a write). Converged like a pin, with ONE exception: a declared profile on a live trust that has NONE is added through the single additive `POST …/plan-profile` (the `wi_` client, its `owner` relation and the consumer's `connection.json` stay); a live profile whose ENVIRONMENT differs is `workload_identity_trust_immutable` (re-create the trust); differing `plan.scopes` change in place (SSO-3925). The consumer still commits ONE `connection.json`: `thoryn login --connection` picks the profile from the job's own OIDC `environment` claim.", "type": "object", "additionalProperties": false, "required": ["environment"], "properties": {
+                        "environment": { "description": "The GitHub environment the plan jobs declare — must differ from `github.environment` (`plan_environment_equals_apply`).", "type": "string", "minLength": 1 },
+                        "scopes": { "description": "Explicit read-only plan scopes: each `tenant:<area>.read` (`plan_scope_not_read_only`) and among `scopes` (`plan_scope_not_subset`). Omit to derive.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^tenant:[a-z-]+\\.read$" } } } },
+                      "github": { "description": "`github_actions` pins: `repository` as `owner/name`; `ownerId` + `repositoryId` (GitHub's immutable ids — both or neither; required for a private repository, looked up once for a public one); `environment` (the GitHub environment the job must run in — REQUIRED for a production trust); `ref` (exact, e.g. `refs/heads/main`); `githubHostedRunnersOnly`.", "type": "object", "additionalProperties": false, "required": ["repository"], "properties": {
+                        "repository": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$" },
+                        "ownerId": { "type": "integer", "minimum": 1 }, "repositoryId": { "type": "integer", "minimum": 1 },
+                        "environment": { "type": "string", "minLength": 1 }, "ref": { "type": "string", "pattern": "^refs/" }, "githubHostedRunnersOnly": { "type": "boolean" } },
+                        "dependentRequired": { "ownerId": ["repositoryId"], "repositoryId": ["ownerId"] } },
+                      "forgejo": { "description": "`forgejo` pins: `instanceUrl` (the instance origin, `https://host`, no path); `owner` + `ownerId` and `repository` + `repositoryId` (the instance's immutable ids — REQUIRED, a Forgejo instance may be private); `ref` (exact — REQUIRED for a production trust: Forgejo has no environments).", "type": "object", "additionalProperties": false, "required": ["instanceUrl", "owner", "ownerId", "repository", "repositoryId"], "properties": {
+                        "instanceUrl": { "type": "string", "pattern": "^https://[^/?#]+$" }, "owner": { "type": "string", "minLength": 1 }, "ownerId": { "type": "integer", "minimum": 1 },
+                        "repository": { "type": "string", "minLength": 1 }, "repositoryId": { "type": "integer", "minimum": 1 }, "ref": { "type": "string", "pattern": "^refs/" } } },
+                      "kubernetes": { "description": "`kubernetes` pins (SSO-3678, rung 3): `issuer` (the cluster's exact OIDC issuer, `https://…`); `namespace` and `serviceAccount` (REQUIRED for a production trust; `serviceAccount` needs `namespace`); `jwks` — the cluster's PUBLIC JWK Set (`kubectl get --raw /openid/v1/jwks`), pinned inline for a cluster whose issuer Thoryn cannot reach: RSA / EC keys with a `kid`, NO private parameters. Without `jwks` Thoryn discovers the keys from the issuer.", "type": "object", "additionalProperties": false, "required": ["issuer"], "properties": {
+                        "issuer": { "type": "string", "pattern": "^https://" }, "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" }, "serviceAccount": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" },
+                        "jwks": { "type": "object", "required": ["keys"], "properties": { "keys": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["kty", "kid"] } } } } },
+                        "dependentRequired": { "serviceAccount": ["namespace"] } }
+                    },
+                    "allOf": [
+                      { "if": { "properties": { "provider": { "const": "github_actions" } } }, "then": { "required": ["github"], "not": { "anyOf": [ { "required": ["forgejo"] }, { "required": ["kubernetes"] } ] } } },
+                      { "if": { "properties": { "provider": { "const": "forgejo" } } }, "then": { "required": ["forgejo"], "not": { "anyOf": [ { "required": ["github"] }, { "required": ["kubernetes"] }, { "required": ["plan"] } ] } } },
+                      { "if": { "properties": { "provider": { "const": "kubernetes" } } }, "then": { "required": ["kubernetes"], "not": { "anyOf": [ { "required": ["github"] }, { "required": ["forgejo"] }, { "required": ["plan"] } ] } } }
+                    ] } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "required": ["jwksUri"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "not": { "required": ["jwks"] } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "clientAuthenticationMethods": { "contains": { "const": "private_key_jwt" } } }, "required": ["clientAuthenticationMethods"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "anyOf": [ { "required": ["jwksUri"] }, { "required": ["jwks"] } ] } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "clientAuthenticationMethods": { "contains": { "const": "federated_assertion" } } }, "required": ["clientAuthenticationMethods"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "required": ["federatedTrust"],
+                    "properties": { "clientAuthenticationMethods": { "maxItems": 1 }, "grantTypes": { "items": { "enum": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"] } }, "requireProofKey": { "const": true } },
+                    "not": { "anyOf": [ { "required": ["jwksUri"] }, { "required": ["jwks"] }, { "properties": { "clientType": { "const": "public" } }, "required": ["clientType"] } ] } } },
+                    "not": { "required": ["secretSink"] } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "clientAuthenticationMethods": { "contains": { "const": "federated_assertion" } }, "grantTypes": { "contains": { "const": "urn:ietf:params:oauth:grant-type:token-exchange" } } }, "required": ["clientAuthenticationMethods", "grantTypes"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "required": ["allowTokenExchange"], "properties": { "allowTokenExchange": { "const": true } } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "allowTokenExchange": { "const": true } }, "required": ["allowTokenExchange"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "required": ["grantTypes"],
+                    "properties": { "grantTypes": { "contains": { "const": "urn:ietf:params:oauth:grant-type:token-exchange" } }, "clientAuthenticationMethods": { "not": { "contains": { "const": "none" } } } },
+                    "not": { "properties": { "clientType": { "const": "public" } }, "required": ["clientType"] } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "allowTokenIntrospection": { "const": true } }, "required": ["allowTokenIntrospection"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "properties": { "clientAuthenticationMethods": { "not": { "contains": { "const": "none" } } } },
+                    "not": { "properties": { "clientType": { "const": "public" } }, "required": ["clientType"] } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "required": ["refreshTokenAbsoluteMaxTtlSeconds"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "required": ["refreshTokenSlidingWindow"], "properties": { "refreshTokenSlidingWindow": { "const": true } } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "required": ["federatedTrust"] } }, "required": ["spec"] },
+          "then": { "properties": { "spec": { "required": ["clientAuthenticationMethods"], "properties": { "clientAuthenticationMethods": { "contains": { "const": "federated_assertion" } } } } } } },
+        { "if": { "properties": { "kind": { "const": "application" }, "spec": { "properties": { "clientAuthenticationMethods": { "not": { "contains": { "const": "client_secret_basic" } } } }, "required": ["clientAuthenticationMethods"] } }, "required": ["spec"] },
+          "then": { "not": { "required": ["secretSink"] } } },
+        { "if": { "properties": { "readOnly": { "const": true } }, "required": ["readOnly"] },
+          "then": { "not": { "required": ["grants"] } } },
+        { "if": { "properties": { "readOnly": { "const": true } }, "required": ["readOnly"] },
+          "then": { "not": { "required": ["retain"] } } },
+        { "if": { "properties": { "kind": { "const": "role" } } },
+          "then": { "required": ["name"], "not": { "required": ["grants"] }, "properties": { "spec": { "type": "object", "additionalProperties": false, "required": ["permissions"], "properties": {
+                      "permissions": { "description": "SSO-3941 — the FULL set of permission names the role grants, compared as a set (`[]` grants nothing). A permission the workspace does not have yet is created (permissions are workspace-wide). Any non-empty string except a reserved platform-scope namespace — a name whose first `:`-segment is `tenant`, `admin` or `holder` (case-insensitive) is refused `permission_name_reserved` by product-api, and by the file. E.g. `invoices:read`, `forge:maintain`.",
+                                       "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "not": { "pattern": "^([Tt][Ee][Nn][Aa][Nn][Tt]|[Aa][Dd][Mm][Ii][Nn]|[Hh][Oo][Ll][Dd][Ee][Rr]):" } } },
+                      "description": { "description": "Optional human-readable description; omitted keeps the live one.", "type": "string" } } } } } }
       ]
     }
   }

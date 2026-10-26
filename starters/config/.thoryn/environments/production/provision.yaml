@@ -1,17 +1,20 @@
-# PRODUCTION section of the workspace configuration — `thoryn provision apply` converges it on every push to
-# main, signed in with the production workload identity trust (connection `production` in
-# .thoryn/template.json; its clientId is the THORYN_PRODUCTION_WIF_CLIENT_ID variable of the production
-# GitHub environment).
+# PRODUCTION section of the workspace's TENANT provisioning (oauthy ADR 2026-10-25, provisioning is tenant and
+# applications). This config project is the ONE place that defines what the tenant IS: its environments, identity
+# sources (federationMember), users (sandbox test users included), sign-in (loginMethods, loginFlow, loginTheme),
+# email provider, custom domain, roles, and the workload identity trusts of the workspace's app projects.
+# Applications are USERS of the tenant: each app project declares its own OAuth client in its own
+# thoryn.io/application/v1 file — never here. The engine refuses `kind: application` in this file.
 #
-# The config project owns everything workspace-wide: the environments themselves, and per environment the
-# sign-in methods, flows, branding, email provider, identity providers and (soon) the custom domain.
-# Application projects own only their own OAuth clients and test users; never declare those here.
+# Converged by the production connection (.thoryn/environments/production/connection.json, seeded with the repository:
+# this repository's own workload identity, which signs in to the production plane only from the reviewed GitHub
+# environment `thoryn-production` on main). The provisioning stub (.github/workflows/thoryn-provisioning.yml, dispatched
+# by the Thoryn GitHub App) plans it on every pull request and applies it on main; `.thoryn/workflow.yaml` lists the files.
+# `thoryn project init config` replaces this file with one naming your sandbox literally.
 #
-# Resources without `environment:` live on the production plane. No secrets in this file: name the
-# environment variable that carries one (`smtpPasswordEnv`, `clientSecretEnv`) and pass it from a GitHub
-# secret in .github/workflows/thoryn.yml. `{{env.NAME}}` is filled in by the `thoryn` CLI from the
-# environment when it reads the file; the workflow maps the Actions variables into it.
-apiVersion: thoryn.io/provision/v1
+# Resources without `environment:` live on the production plane. No secrets in this file: name the environment
+# variable that carries one (`smtpPasswordEnv`, `clientSecretEnv`). `{{env.NAME}}` is filled in by the `thoryn` CLI
+# from the environment when it reads the file — in CI from the `env:` block of .thoryn/workflow.yaml.
+apiVersion: thoryn.io/tenant/v1
 resources:
   # Every sandbox of the workspace. Each one also has its own section under .thoryn/environments/.
   - kind: environment
@@ -25,7 +28,7 @@ resources:
     spec:
       methods: ["password", "passkey"]
 
-  # ── Add more as you need them (and add the matching scopes to .thoryn/template.json and the trust) ──
+  # ── Add more as you need them (and the matching scopes to the production trust and connection.json) ──
   #
   # Branding of the hosted sign-in pages (scope tenant:idp.write):
   # - kind: loginTheme
@@ -34,7 +37,7 @@ resources:
   #     primaryColor: "#3d5afe"
   #
   # Your own SMTP server for production email (scopes tenant:email.read / tenant:email.write). The password
-  # comes from the SMTP_PASSWORD environment variable; pass it from a GitHub secret.
+  # comes from the SMTP_PASSWORD environment variable, never from this file.
   # - kind: emailProvider
   #   spec:
   #     smtpHost: "smtp.example.com"
@@ -55,9 +58,8 @@ resources:
   #     clientId: "thoryn"
   #     clientSecretEnv: CORPORATE_IDP_CLIENT_SECRET
   #
-  # Sign-in on your own domain — the `customDomain` kind is coming to the CLI (SSO-3413). Until then use
-  # `thoryn domain` once, by hand. Applications need no change when it becomes active: they resolve their
-  # issuer at run time.
+  # Sign-in on your own domain (scopes tenant:domains.read / tenant:domains.write). Applications need no change when
+  # it becomes active: they resolve their issuer at run time.
   # - kind: customDomain
   #   spec:
-  #     hostname: "auth.example.com"
+  #     host: "auth.example.com"

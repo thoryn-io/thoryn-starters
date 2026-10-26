@@ -17,9 +17,9 @@ A workspace is configured by **one config project** and used by **many applicati
 |---|---|---|
 | How many | One per workspace | Many per workspace |
 | Contains | Configuration only, no app code | An app (Spring Boot, ASP.NET Core, Express) |
-| `.thoryn/provision.yaml` declares | Workspace-wide configuration: environments, federation members / IdPs, login methods, login flows, branding, email provider, custom domain. Production and every sandbox are sections. | Only its own OAuth application client(s) and its own sandbox test users. No environment, no workspace configuration. |
+| Provisioning declares | **Tenant provisioning** (`apiVersion: thoryn.io/tenant/v1`, one file per section under `.thoryn/environments/<section>/`): environments, federation members / IdPs, users (sandbox test users included), login methods, login flows, branding, email provider, custom domain, roles. Production and every sandbox are sections. | Its own OAuth application client(s) in `.thoryn/provision.yaml`, plus (until the application starters move to `thoryn.io/application/v1`) its own sandbox test user. No environment, no workspace configuration. |
 | Sign-in (`connections` in `.thoryn/template.json`) | One per environment section. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | One: the sandbox the app runs against. |
-| CI | `thoryn provision plan` on pull requests, `apply` on `main`, per environment. | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
+| CI | The provisioning **stub** the creation flow seeds (`.github/workflows/thoryn-provisioning.yml`, calling thoryn-cli's reusable workflow at a `cli-v*` release), dispatched by the Thoryn GitHub App: `thoryn provision plan` on pull requests (read-only plan profile), `apply` on `main` behind the reviewed production environment. The template itself ships no workflow (SSO-3971). | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
 | End result | A working sign-in stack, on the customer's own domain once one is configured. | A running app that signs users in and protects its API. |
 
 No project hard-codes its workspace, its environment or its issuer. The Actions variables name the
@@ -34,7 +34,7 @@ therefore needs no change in any application repository.
 | [`starters/express`](starters/express) | application | Node 22+ / Express 5 / openid-client + jose | `thoryn-io/starter-express` |
 | [`starters/spring-boot`](starters/spring-boot) | application | Java 21 / Spring Boot 4.1 / Spring Security 7.1 | `thoryn-io/starter-spring-boot` |
 | [`starters/aspnet-core`](starters/aspnet-core) | application | .NET 10 / ASP.NET Core (OpenID Connect + JWT bearer handlers) | `thoryn-io/starter-aspnet-core` |
-| [`starters/config`](starters/config) | config | `.thoryn/environments/<section>/` + a plan/apply workflow | `thoryn-io/starter-config` |
+| [`starters/config`](starters/config) | config | `.thoryn/environments/<section>/provision.yaml` (`thoryn.io/tenant/v1`); the creation flow seeds the provisioning stub | `thoryn-io/starter-config` |
 
 Every application starter implements the same contract, so one Playwright journey (`shared/e2e`) tests them
 all:
@@ -81,7 +81,7 @@ repository starts with exactly those files.
      and sandbox, its provisioning file, and the `grant` its client needs.
    - `github.productionEnvironment` (config only): the GitHub environment the production trust pins and the
      production job runs in.
-2. **Run time.** The workflows map `${{ vars.THORYN_* }}` into the job's environment. `.thoryn/ci/login.sh
+2. **Run time.** An application starter's workflows map `${{ vars.THORYN_* }}` into the job's environment. `.thoryn/ci/login.sh
    <connection>` signs in with the connection's variables and scopes. In `provision.yaml`, the `thoryn` CLI
    fills in `{{env.NAME}}` from the environment when it reads the file, the resource's `environment` too
    (thoryn-cli SSO-3430).
@@ -157,8 +157,11 @@ Connection `production` has `tenant:environments.read/.write`, `tenant:idp.read/
 makes. A sandbox trust holds no `tenant:environments.write`: the sandbox section configures the sandbox, it
 does not own it (production declares it).
 
-The production GitHub environment's name comes from `github.productionEnvironment`. The workflow reads it
-from `template.json`, so it needs no extra variable.
+The production GitHub environment's name comes from `github.productionEnvironment` (`thoryn-production`); the
+production trust's read-only plan profile is keyed on its `-plan` sibling (`thoryn-production-plan`). Nothing in a
+config project reads these variables at run time any more (SSO-3971): its provisioning runs in thoryn-cli's
+reusable workflow, signed in with each section's `connection.json`, and the stub names both GitHub environments.
+The creation flow still sets them, because the declaration (shared with the orchestrator) fixes them.
 
 ### What the creation flow sets up
 
@@ -183,11 +186,17 @@ For the config project:
 - the GitHub environment `github.productionEnvironment`, with required reviewers and restricted to `main`;
 - a **production** trust pinned to the repository **and** that GitHub environment (`confirmProduction`),
   with the production connection's scopes, and `manager` on the **workspace** for its client. That is the
-  widest grant in the model. It is why the production trust accepts only jobs in that GitHub environment
-  and never a pull request;
+  widest grant in the model. It is why the production trust is minted write scopes only in that GitHub
+  environment. Its **plan profile** is keyed on `thoryn-production-plan`, where a pull request's plan job is
+  minted only the trust's read scopes;
 - a **sandbox** trust in the sandbox, with the sandbox connection's scopes, and `manager` on that sandbox
   for its client;
-- the four repository variables, and `THORYN_PRODUCTION_WIF_CLIENT_ID` in the production GitHub environment.
+- the four repository variables, and `THORYN_PRODUCTION_WIF_CLIENT_ID` in the production GitHub environment;
+- the files the template does not carry, because they name this repository's own trusts (SSO-3971): each
+  section's `connection.json`, the stub `.github/workflows/thoryn-provisioning.yml`, `.thoryn/workflow.yaml`,
+  and `.github/CODEOWNERS` naming the reviewers. `thoryn project init config` also writes both sections'
+  `provision.yaml` with the sandbox named literally; the Thoryn GitHub App keeps the template's and supplies
+  `THORYN_SANDBOX_ENVIRONMENT` in `.thoryn/workflow.yaml`'s `env:`.
 
 ## Publishing: one template repository per starter
 
@@ -206,7 +215,12 @@ repository holds exactly those files; an unconfigured publisher fails the run (S
 - **tooling**: unit tests (CI scripts, `app-env.mjs`, the validator, test-inbox), `shared/` drift check,
   every starter validated as is (no placeholder, declaration against `schemas/template.schema.json` and the
   variable contract, provisioning files against the CLI's schema, the production deploy skeleton's
-  no-identity shape), actionlint.
+  no-identity shape, and — SSO-3971 — the config starter's sections as `thoryn.io/tenant/v1` with no workflow,
+  CI script, `.thoryn/workflow.yaml` or `connection.json` of its own), actionlint.
+- **config — staging plan**: the config starter's sandbox section planned against the staging fixture, signed
+  in with the shared installer and sign-in script. That `thoryn project init config`'s output (template plus
+  seeds) loads as tenant files and passes `thoryn provision workflow check` is pinned in thoryn-cli
+  (`ProjectInitConfigWorkflowTest`).
 - **per starter**: build and unit tests.
 - **per starter, staging e2e** (`stack-e2e.yml`): run the starter's own `.thoryn/ci` steps in place, with the
   staging fixture supplied as the same `THORYN_*` environment a generated repository's workflow maps from
@@ -227,8 +241,8 @@ npm run check            # drift check + validate every starter as is
 
 `shared/` holds what every application starter carries unchanged: the Playwright journey (`shared/e2e`), the
 CI steps (`shared/thoryn/ci`), `app-env.mjs`, the template declaration and the provisioning file. The
-config starter shares the CLI installer and the variable and sign-in scripts. Edit it there and run `npm run
-sync`; CI fails when a starter's copy drifts.
+config starter shares nothing: it carries no CI script (SSO-3971). Edit `shared/` and run `npm run sync`; CI
+fails when a starter's copy drifts.
 
 ## Security
 

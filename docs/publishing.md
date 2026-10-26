@@ -88,9 +88,20 @@ This is the same custody class as the starter orchestrator's own App key (oauthy
 ## One-time setup (product owner)
 
 The four template repositories exist and are marked as templates (checked 2026-10-13:
-`is_template=true`, default branch `main`, 0 KB; still 0 KB on 2026-10-23). What is missing is the publish
-App, the environment `starters-publish` on `thoryn-io/thoryn-starters`, and the App's id and key in that
-environment. Do these steps once, in order:
+`is_template=true`, default branch `main`, 0 KB; still 0 KB on 2026-10-23 and 2026-10-26). What is missing is
+the publish App, the environment `starters-publish` on `thoryn-io/thoryn-starters`, and the App's id and key in
+that environment. Do these steps once, in order:
+
+> **Why `thoryn-io/starter-config` (and the other three) is empty — checked 2026-10-26 (SSO-3971).** The config
+> starter IS in the publish matrix (`config` is one of the four `starters/*`, enforced by `checkPublishMatrix`), so
+> this is not a matrix gap, and nothing ever pushed to any template repository (`GET …/commits` answers `409 Git
+> Repository is empty` for all four). Every run before 2026-10-13 skipped green (the SSO-3675 bug). Since SSO-3675
+> the runs fail in `plan` before any token is minted: run 40064912179 (2026-10-24, the latest) failed
+> `assert-environment.sh` with "the environment starters-publish does not exist on thoryn-io/thoryn-starters". On
+> 2026-10-26 the repository still has no environment, no `STARTERS_PUBLISH_APP_ID` variable and no
+> `STARTERS_PUBLISH_APP_PRIVATE_KEY` secret, and no publish App is installed on `thoryn-io` (the installed Apps are
+> `hetzner-runners-app`, `thoryn-forge-bridge` and `thoryn-starters-staging`, the starter orchestrator's App, which
+> is not the publisher). Steps 1–5 below are the whole fix; then run step 6.
 
 ```bash
 # 0. (Already done.) The template repositories, public, marked as templates.
