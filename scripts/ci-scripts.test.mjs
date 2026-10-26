@@ -65,7 +65,10 @@ test("login.sh for the config project's production connection has no sandbox in 
   const args = r.args();
   assert.equal(args[args.indexOf("--audience") + 1], "https://acme.auth.stg.thoryn.org");
   assert.equal(args[args.indexOf("--client-id") + 1], "wi_prod");
-  assert.equal(args[args.indexOf("--scope") + 1], "tenant:environments.read tenant:environments.write tenant:idp.read tenant:idp.write tenant:access.read");
+  // Exactly the connection's declared scopes, in order (SSO-3993: read and write for every tenant kind).
+  const declared = JSON.parse(readFileSync(join(root, "starters/config/.thoryn/template.json"), "utf8")).connections.production.scopes;
+  assert.ok(declared.includes("tenant:roles.write"), declared.join(" "));
+  assert.equal(args[args.indexOf("--scope") + 1], declared.join(" "));
 });
 
 test("login.sh names every missing variable, with where to set it, and never calls the CLI", () => {

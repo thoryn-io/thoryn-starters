@@ -1,7 +1,7 @@
 {
   "apiVersion": "thoryn.io/starter-template/v2",
   "kind": "config",
-  "description": "The workspace's CONFIG project: TENANT provisioning only (apiVersion thoryn.io/tenant/v1), no app code. It defines what the tenant is (environments, sign-in methods and flows, branding, email, identity providers, users, roles, custom domain), one section per connection under .thoryn/environments/<connection>/. Its provisioning runs through the stub .github/workflows/thoryn-provisioning.yml, which the creation flow (thoryn project init config, or the Thoryn GitHub App) seeds with each connection's connection.json and .thoryn/workflow.yaml, and which calls thoryn-cli's reusable workflow. This file stays in the repository as the declaration of what the creation flow must set up: the trusts, their scopes and grants, and the GitHub Actions variables.",
+  "description": "The workspace's CONFIG project: TENANT provisioning only (apiVersion thoryn.io/tenant/v1), no app code. It defines what the tenant is (environments, sign-in methods and flows, branding, email, identity providers, users, roles, custom domain), one section per connection under .thoryn/environments/<connection>/. Its provisioning runs through the stub .github/workflows/thoryn-provisioning.yml, which the creation flow (thoryn project init config, or the Thoryn GitHub App) seeds with each connection's connection.json and .thoryn/workflow.yaml, and which calls thoryn-cli's reusable workflow. The two provisioning files declare ONLY what the setup creates (the sandbox environment), so merging the setup pull request changes nothing in the workspace; the workspace's current configuration arrives through the import pull request (SSO-3993, SSO-3995). Both connections request read and write for every tenant kind (thoryn-cli ScopeRequirements.AREAS plus access), so the import can read the whole tenant and every imported entry can be converged; the production trust's plan profile is derived by the hub as every .read member. This file stays in the repository as the declaration of what the creation flow must set up: the trusts, their scopes and grants, and the GitHub Actions variables.",
   "github": {
     "productionEnvironment": "thoryn-production"
   },
@@ -30,30 +30,61 @@
   },
   "connections": {
     "production": {
-      "description": "The production workload identity trust. It pins the GitHub environment github.productionEnvironment (only jobs in it, never a pull request), declares the environments and converges production's own configuration.",
+      "description": "The production workload identity trust. It pins the GitHub environment github.productionEnvironment (only jobs in it, never a pull request), declares the environments and converges production's own configuration. Read and write for every tenant kind; its plan profile (the <environment>-plan GitHub environment) is minted every .read member.",
       "production": true,
       "clientIdVariable": "THORYN_PRODUCTION_WIF_CLIENT_ID",
       "provisionFile": ".thoryn/environments/production/provision.yaml",
       "scopes": [
+        "tenant:workload-identity.read",
+        "tenant:workload-identity.write",
+        "tenant:access.read",
+        "tenant:access.write",
         "tenant:environments.read",
         "tenant:environments.write",
+        "tenant:applications.read",
+        "tenant:applications.write",
+        "tenant:users.read",
+        "tenant:users.write",
         "tenant:idp.read",
         "tenant:idp.write",
-        "tenant:access.read"
+        "tenant:federation.read",
+        "tenant:federation.write",
+        "tenant:email.read",
+        "tenant:email.write",
+        "tenant:domains.read",
+        "tenant:domains.write",
+        "tenant:roles.read",
+        "tenant:roles.write"
       ],
       "grant": { "relation": "manager", "on": "workspace" }
     },
     "sandbox": {
-      "description": "The sandbox's workload identity trust. It converges that sandbox's configuration.",
+      "description": "The sandbox's workload identity trust. It converges that sandbox's configuration. Read and write for every tenant kind; manager of that sandbox alone, so the grant, not the scopes, keeps it inside the sandbox.",
       "production": false,
       "clientIdVariable": "THORYN_SANDBOX_WIF_CLIENT_ID",
       "environmentVariable": "THORYN_SANDBOX_ENVIRONMENT",
       "provisionFile": ".thoryn/environments/sandbox/provision.yaml",
       "scopes": [
+        "tenant:workload-identity.read",
+        "tenant:workload-identity.write",
+        "tenant:access.read",
+        "tenant:access.write",
         "tenant:environments.read",
+        "tenant:environments.write",
+        "tenant:applications.read",
+        "tenant:applications.write",
+        "tenant:users.read",
+        "tenant:users.write",
         "tenant:idp.read",
         "tenant:idp.write",
-        "tenant:access.read"
+        "tenant:federation.read",
+        "tenant:federation.write",
+        "tenant:email.read",
+        "tenant:email.write",
+        "tenant:domains.read",
+        "tenant:domains.write",
+        "tenant:roles.read",
+        "tenant:roles.write"
       ],
       "grant": { "relation": "manager", "on": "environment" }
     }

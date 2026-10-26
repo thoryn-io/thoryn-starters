@@ -20,6 +20,12 @@
 //    project init config`, or the Thoryn GitHub App) seeds the provisioning stub, its run-time configuration and each
 //    connection's contract. A template workflow would win over the App's seeded stub (it writes only where no file
 //    exists) and would converge the workspace a second time next to the stub;
+//  - SSO-3993: a CONFIG template changes nothing that already exists. Its sections declare ONLY the environment the setup
+//    creates, by slug only — the production section owns it (not read-only), each sandbox section anchors on its own sandbox read-only,
+//    exactly as the orchestrator's seeded fallback and `thoryn project init config` (cli-v0.50.0) write them — and every
+//    other tenant kind only as a commented example: the workspace's live configuration arrives through the import pull
+//    request (thoryn-provisioning ADR 2026-09-30 §13.1 / §13.10, SSO-3995). Every connection requests read and write for
+//    every tenant kind (TENANT_SCOPE_AREAS), so the import can read, and a plan profile read, the whole tenant;
 //  - an APPLICATION project's production deploy job (SSO-3666) reads vars.THORYN_PRODUCTION_CLIENT_ID in the
 //    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
 //    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
@@ -81,6 +87,15 @@ const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION", PRODUCTION_CLIENT_ID_VARIAB
 /** SSO-3971 — the part a config project's sections declare (thoryn-cli SSO-3962, oauthy ADR 2026-10-25). */
 export const TENANT_API_VERSION = "thoryn.io/tenant/v1";
 const APP_KINDS = new Set(["application", "user"]);
+/**
+ * SSO-3993 — the scope areas of every tenant kind, `tenant:<area>.read` and `.write` each: thoryn-cli
+ * `ScopeRequirements.AREAS` (the product-api gate of each provisioning kind) plus `access` (the ownership check and
+ * `grants:` blocks). The same list the `starters` sign-in client holds and the wizard's web flow requests
+ * (thoryn-provisioning `.thoryn/provision.yaml` and `StarterWebProperties` TENANT_KIND_AREAS, SSO-3992) — a config
+ * connection asking for a scope outside the wizard token is refused `scope_not_grantable` before anything is created.
+ */
+export const TENANT_SCOPE_AREAS = ["workload-identity", "access", "environments", "applications", "users", "idp", "federation", "email", "domains", "roles"];
+export const TENANT_SCOPES = TENANT_SCOPE_AREAS.flatMap((a) => [`tenant:${a}.read`, `tenant:${a}.write`]);
 /** Every application starter listens on 127.0.0.1:8080 by default (PORT / APP_BASE_URL override it). */
 export const LOCAL_PORT = 8080;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
@@ -181,15 +196,48 @@ export function checkStarter(dir, schemas) {
     if (manifest.kind === "config" && existsSync(join(dir, dirname(c.provisionFile), "connection.json"))) {
       fail(`${dirname(c.provisionFile)}/connection.json is seeded by the creation flow (it names the repository's own trust); the template must not carry one`);
     }
+    if (manifest.kind === "config") {
+      // SSO-3993 — nothing but the environment the setup creates: a declared value the template cannot know would
+      // change an existing workspace when the setup pull request merges (login methods, until this rule).
+      for (const r of resources) {
+        if (r.kind !== "environment") {
+          fail(`${c.provisionFile}: a config template declares only the environment the setup creates — ${r.kind}/${r.name ?? r.kind} would change an existing workspace when the setup pull request merges; keep it a commented example (the import pull request brings what the workspace already has)`);
+        } else {
+          // By slug only: any other field is compared with the live sandbox — an owned one would be renamed by the first
+          // apply, a read-only one would fail the plan (`access_read_only`) when the person chose an existing sandbox.
+          const extra = Object.keys(r.spec ?? {}).filter((k) => k !== "slug");
+          if (extra.length) fail(`${c.provisionFile}: environment/${r.name} is declared by its slug only — ${extra.join(", ")} would be compared with the live sandbox, which the template cannot know`);
+        }
+      }
+      const missing = TENANT_SCOPES.filter((s) => !c.scopes.includes(s));
+      if (missing.length) {
+        fail(`connection ${name}: a config connection requests read and write for every tenant kind — missing ${missing.join(", ")} (the import reads the whole tenant with them; the plan profile is every .read)`);
+      }
+    }
     if (!c.production) {
       for (const r of resources) {
-        if (r.kind === "environment") fail(`${c.provisionFile}: a sandbox connection must not declare an environment (production does)`);
-        else if (!envRef(c.environmentVariable).test(r.environment ?? "")) {
+        if (r.kind === "environment") {
+          if (manifest.kind !== "config") {
+            fail(`${c.provisionFile}: a sandbox connection must not declare an environment (production does)`);
+          } else {
+            // The anchor of a sandbox section: its own sandbox, a dependency (the production section owns it), so plan
+            // reads it and apply never writes it — the shape the orchestrator's seeded fallback and cli-v0.50.0 write.
+            if (!envRef(c.environmentVariable).test(r.spec?.slug ?? "")) {
+              fail(`${c.provisionFile}: environment/${r.name} must be {{env.${c.environmentVariable}}}, the sandbox this section configures`);
+            }
+            if (r.readOnly !== true) fail(`${c.provisionFile}: environment/${r.name} must be readOnly: true — the production section declares the sandbox; this section only depends on it`);
+          }
+        } else if (!envRef(c.environmentVariable).test(r.environment ?? "")) {
           fail(`${c.provisionFile}: ${r.kind}/${r.name ?? r.kind} must live in {{env.${c.environmentVariable}}}, the sandbox its connection names`);
         }
       }
     } else {
       for (const r of resources) if (r.environment) fail(`${c.provisionFile}: the production section converges the production plane; ${r.kind} names an environment`);
+      if (manifest.kind === "config") {
+        for (const r of resources) {
+          if (r.kind === "environment" && r.readOnly === true) fail(`${c.provisionFile}: environment/${r.name} must not be readOnly — the production section owns the sandboxes it declares`);
+        }
+      }
     }
     if (manifest.kind === "application") {
       for (const r of resources) {
@@ -227,6 +275,12 @@ export function checkStarter(dir, schemas) {
     const slugs = (doc?.resources ?? []).filter((r) => r.kind === "environment").map((r) => r.spec?.slug ?? "");
     for (const v of sandboxVars) {
       if (!slugs.some((s) => envRef(v).test(s))) fail(`the production section does not declare the sandbox {{env.${v}}}`);
+    }
+    // SSO-3993 — and no environment the setup did not create: a literal one would be created by the first apply.
+    for (const r of (doc?.resources ?? []).filter((x) => x.kind === "environment")) {
+      if (!sandboxVars.some((v) => envRef(v).test(r.spec?.slug ?? ""))) {
+        fail(`${prod.provisionFile}: environment/${r.name} is not a sandbox the setup creates — the template declares only ${sandboxVars.map((v) => `{{env.${v}}}`).join(", ")}; keep another sandbox a commented example`);
+      }
     }
     const sections = existsSync(join(dir, ".thoryn/environments")) ? readdirSync(join(dir, ".thoryn/environments")) : [];
     for (const s of sections) if (!manifest.connections[s]) fail(`section .thoryn/environments/${s} has no connection in template.json`);

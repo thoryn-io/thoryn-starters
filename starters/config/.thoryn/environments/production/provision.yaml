@@ -5,10 +5,19 @@
 # Applications are USERS of the tenant: each app project declares its own OAuth client in its own
 # thoryn.io/application/v1 file — never here. The engine refuses `kind: application` in this file.
 #
+# THIS FILE STARTS WITH ONLY WHAT THE SETUP CREATED (SSO-3993): the sandbox environment. Merging the setup pull request
+# changes nothing in your workspace. What the workspace already has — its login methods, branding, email provider,
+# identity providers, custom domain, roles, trusts — arrives through a separate IMPORT pull request that Thoryn opens
+# after the setup is merged ("Thoryn: your workspace's current configuration", whose plan shows every row unchanged;
+# a new workspace has nothing more to import). Where the Thoryn GitHub App does not open it yet, render it yourself:
+# `thoryn provision import --file .thoryn/environments/production/provision.yaml`. The commented examples below are the
+# shapes you add yourself from then on.
+#
 # Converged by the production connection (.thoryn/environments/production/connection.json, seeded with the repository:
 # this repository's own workload identity, which signs in to the production plane only from the reviewed GitHub
 # environment `thoryn-production` on main). The provisioning stub (.github/workflows/thoryn-provisioning.yml, dispatched
 # by the Thoryn GitHub App) plans it on every pull request and applies it on main; `.thoryn/workflow.yaml` lists the files.
+# The production connection holds read and write for every tenant kind, so nothing below needs a new scope.
 # `thoryn project init config` replaces this file with one naming your sandbox literally.
 #
 # Resources without `environment:` live on the production plane. No secrets in this file: name the environment
@@ -16,28 +25,31 @@
 # from the environment when it reads the file — in CI from the `env:` block of .thoryn/workflow.yaml.
 apiVersion: thoryn.io/tenant/v1
 resources:
-  # Every sandbox of the workspace. Each one also has its own section under .thoryn/environments/.
+  # The sandbox the setup created (or the one you chose). Declared by its slug only, so the first apply changes
+  # nothing — not even its display name. Each sandbox also has its own section under .thoryn/environments/.
+  # `retain: true` — mine, keep: `destroy` and `--prune` never remove it (ADR 2026-10-15, the platform is the ledger).
   - kind: environment
     name: sandbox
+    retain: true
     spec:
       slug: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
-      displayName: "Sandbox {{env.THORYN_SANDBOX_ENVIRONMENT}}"
 
-  # How people sign in on production.
-  - kind: loginMethods
-    spec:
-      methods: ["password", "passkey"]
-
-  # ── Add more as you need them (and the matching scopes to the production trust and connection.json) ──
+  # ── Examples. The import pull request fills in what your workspace already has; remove the leading `#` to add more ──
   #
-  # Branding of the hosted sign-in pages (scope tenant:idp.write):
+  # How people sign in on production (tenant:idp.*):
+  # - kind: loginMethods
+  #   spec:
+  #     methods: ["password", "passkey"]
+  #
+  # Branding of the hosted sign-in pages (tenant:idp.*):
   # - kind: loginTheme
   #   spec:
   #     logoUrl: "https://www.example.com/logo.svg"
   #     primaryColor: "#3d5afe"
   #
-  # Your own SMTP server for production email (scopes tenant:email.read / tenant:email.write). The password
-  # comes from the SMTP_PASSWORD environment variable, never from this file.
+  # Your own SMTP server for production email (tenant:email.*). The password comes from the SMTP_PASSWORD environment
+  # variable, never from this file. (The import renders an existing provider `readOnly: true`: the provisioning workflow
+  # carries no secrets, so a person takes it over when the password has to change.)
   # - kind: emailProvider
   #   spec:
   #     smtpHost: "smtp.example.com"
@@ -48,7 +60,7 @@ resources:
   #     fromAddress: "no-reply@example.com"
   #     fromName: "Example"
   #
-  # A customer identity provider (scopes tenant:federation.read / tenant:federation.write):
+  # A customer identity provider (tenant:federation.*):
   # - kind: federationMember
   #   name: corporate-idp
   #   spec:
@@ -58,8 +70,22 @@ resources:
   #     clientId: "thoryn"
   #     clientSecretEnv: CORPORATE_IDP_CLIENT_SECRET
   #
-  # Sign-in on your own domain (scopes tenant:domains.read / tenant:domains.write). Applications need no change when
-  # it becomes active: they resolve their issuer at run time.
+  # A role your applications map into tokens (tenant:roles.*):
+  # - kind: role
+  #   name: support
+  #   spec:
+  #     description: "Support staff"
+  #     permissions: ["tickets:read", "tickets:write"]
+  #
+  # Sign-in on your own domain (tenant:domains.*). Applications need no change when it becomes active: they resolve
+  # their issuer at run time.
   # - kind: customDomain
   #   spec:
   #     host: "auth.example.com"
+  #
+  # Another sandbox (tenant:environments.*): production creates it. See README.md, "Another sandbox".
+  # - kind: environment
+  #   name: staging
+  #   spec:
+  #     slug: "staging"
+  #     displayName: "Staging"
