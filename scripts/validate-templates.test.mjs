@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PLACEHOLDER_TOKEN, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
+import { PLACEHOLDER_TOKEN, TENANT_SCOPES, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
 import { rmSync } from "node:fs";
 import YAML from "yaml";
 
@@ -303,6 +303,23 @@ test("every config connection requests read and write for every tenant kind", ()
   const problems = checkStarter(dir, schemas).join("\n");
   assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:email\.read/);
   assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:roles\.read, tenant:roles\.write/);
+});
+
+test("every config connection requests the compliance scopes, which the legalDocument kind needs (SSO-4058)", () => {
+  assert.ok(TENANT_SCOPES.includes("tenant:compliance.read") && TENANT_SCOPES.includes("tenant:compliance.write"), TENANT_SCOPES.join(" "));
+  const published = JSON.parse(readFileSync(join(root, "starters/config/.thoryn/template.json"), "utf8"));
+  for (const [name, c] of Object.entries(published.connections)) {
+    assert.ok(c.scopes.includes("tenant:compliance.read") && c.scopes.includes("tenant:compliance.write"), `${name}: ${c.scopes.join(" ")}`);
+  }
+  // A config template from before SSO-4058 (every other tenant kind, no compliance) fails the check, naming both scopes.
+  const dir = copy("config");
+  editJson(dir, ".thoryn/template.json", (m) => {
+    for (const c of Object.values(m.connections)) c.scopes = c.scopes.filter((s) => !s.startsWith("tenant:compliance."));
+    return m;
+  });
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:compliance\.read, tenant:compliance\.write/);
+  assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:compliance\.read, tenant:compliance\.write/);
 });
 
 test("the pre-SSO-3993 config template (login methods declared, idp and environments scopes only) fails the check", () => {

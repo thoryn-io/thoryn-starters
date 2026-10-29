@@ -105,8 +105,9 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
    wording there first (with `environment:` in the sandbox section). The example bodies (the sign-in-link email
    in English and Dutch) are in `.thoryn/environments/production/emails/examples/`.
 2. Both connections hold read and write for every tenant kind (`.thoryn/template.json`), so no resource
-   needs a new scope. A project created before SSO-3993 has narrower trusts: add the missing scope to the
-   trust and to the section's `connection.json`. For example, `emailProvider` needs `tenant:email.read` and
+   needs a new scope. A project created before SSO-3993 (or, for `tenant:compliance.*`, before SSO-4058) has
+   narrower trusts: add the missing scope to the trust and to the section's `connection.json`. The wizard's Your
+   setups names the scopes such a project is missing. For example, `emailProvider` needs `tenant:email.read` and
    `tenant:email.write`. `thoryn provision workflow check` names a missing scope before any run does. A trust
    can only be given scopes the admin changing it holds:
    ```bash
@@ -129,7 +130,7 @@ Removing a resource from a file does not delete it: removals are never automated
    and write for every tenant kind), and make its client manager of the sandbox:
    ```bash
    scopes=()
-   for area in workload-identity access environments applications users idp federation email domains roles; do
+   for area in workload-identity access environments applications users idp federation email domains roles compliance; do
      scopes+=(--scope "tenant:$area.read" --scope "tenant:$area.write")
    done
    thoryn workload-identity trusts create --environment <slug> --name <repository> \

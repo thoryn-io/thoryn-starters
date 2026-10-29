@@ -93,8 +93,13 @@ const APP_KINDS = new Set(["application", "user"]);
  * `grants:` blocks). The same list the `starters` sign-in client holds and the wizard's web flow requests
  * (thoryn-provisioning `.thoryn/provision.yaml` and `StarterWebProperties` TENANT_KIND_AREAS, SSO-3992) — a config
  * connection asking for a scope outside the wizard token is refused `scope_not_grantable` before anything is created.
+ *
+ * SSO-4058 — `compliance`: the workspace's terms of use and privacy policy (product-api
+ * `/api/v1/login-experience/legal-documents`, oauthy SSO-4047), which the `legalDocument` kind manages (thoryn-cli
+ * SSO-4057). Listed here ahead of that CLI release so a config project created from now on can carry it; a project
+ * created before holds a narrower set, which the wizard's Your setups names (thoryn-provisioning SSO-4058).
  */
-export const TENANT_SCOPE_AREAS = ["workload-identity", "access", "environments", "applications", "users", "idp", "federation", "email", "domains", "roles"];
+export const TENANT_SCOPE_AREAS = ["workload-identity", "access", "environments", "applications", "users", "idp", "federation", "email", "domains", "roles", "compliance"];
 export const TENANT_SCOPES = TENANT_SCOPE_AREAS.flatMap((a) => [`tenant:${a}.read`, `tenant:${a}.write`]);
 /** Every application starter listens on 127.0.0.1:8080 by default (PORT / APP_BASE_URL override it). */
 export const LOCAL_PORT = 8080;

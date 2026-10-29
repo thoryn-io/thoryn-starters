@@ -152,15 +152,19 @@ to Thoryn: the app repository has no production identity. Guide:
 
 Both connections request **read and write for every tenant kind** (SSO-3993): `tenant:<area>.read` and
 `.write` for `workload-identity`, `access`, `environments`, `applications`, `users`, `idp`, `federation`,
-`email`, `domains` and `roles` — thoryn-cli's `ScopeRequirements.AREAS` plus `access`, the same list the
-`starters` sign-in client holds (thoryn-provisioning SSO-3992). That lets the import pull request read the whole
+`email`, `domains`, `roles` and `compliance` — thoryn-cli's `ScopeRequirements.AREAS` plus `access`, the same list the
+`starters` sign-in client holds (thoryn-provisioning SSO-3992). `compliance` (SSO-4058) is for the workspace's terms of
+use and privacy policy, which the `legalDocument` kind of a coming CLI release manages; it is listed ahead of that
+release so a config project created from now on can carry it. That lets the import pull request read the whole
 tenant and every imported entry be converged; the production trust's plan profile is minted every `.read`
 member. `npm run check` fails a config connection that lacks one. Connection `production`'s grant is `manager`
 on the **workspace**, because creating an environment needs `manager` on its parent; connection `sandbox`'s is
 `manager` on the sandbox, so the grant (not the scopes) keeps it inside that sandbox. A trust can carry only
 scopes the person creating it holds, so creating a config project from this template needs a wizard token with
-all of them (thoryn-provisioning #39); before that, the creation is refused `scope_not_grantable` and nothing is
-created.
+all of them (thoryn-provisioning #39; for `compliance`, the `starters` client must hold it and the web flow request it,
+SSO-4058); before that, the creation is refused `scope_not_grantable` and nothing is created. A config project created
+before a scope was added keeps its narrower trusts: the wizard's Your setups names the scopes it is missing and how to
+add them.
 
 The template's two sections declare **only the sandbox environment the setup creates** — production owns it
 (`retain: true`), the sandbox section anchors on it `readOnly: true`, both by slug only — and every other
