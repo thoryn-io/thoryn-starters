@@ -230,8 +230,20 @@ test("every commented example, uncommented, validates against the provisioning s
   const examples = commentedExamples(readFileSync(join(root, "starters/config", PRODUCTION), "utf8"));
   // SSO-4041 — the branding example shows the whole record (an undeclared field is cleared on apply).
   const theme = examples.find((r) => r.kind === "loginTheme");
-  assert.deepEqual(Object.keys(theme.spec).sort(), ["backgroundColor", "borderRadiusPx", "cssVariables", "logoUrl", "primaryColor", "theme"]);
+  // SSO-4048 (cli-v0.53.0) — plus the workspace name, browser title, favicon and support link. The terms and privacy
+  // links stay commented inside the example (left unset, the hosted page keeps its default footer).
+  assert.deepEqual(Object.keys(theme.spec).sort(), [
+    "backgroundColor", "borderRadiusPx", "cssVariables", "displayName", "faviconUrl", "logoUrl", "pageTitle", "primaryColor",
+    "supportUrl", "theme",
+  ]);
   assert.equal(Object.keys(theme.spec.cssVariables).length, 4);
+  const production = readFileSync(join(root, "starters/config", PRODUCTION), "utf8");
+  const legal = Object.fromEntries(
+    [...production.matchAll(/^ {2}# {5}# (termsUrl|privacyUrl): (".*")$/gm)].map((m) => [m[1], JSON.parse(m[2])]),
+  );
+  assert.deepEqual(Object.keys(legal).sort(), ["privacyUrl", "termsUrl"], "the legal links are shown, commented, in the loginTheme example");
+  const withLegal = { apiVersion: "thoryn.io/tenant/v1", resources: [{ ...theme, spec: { ...theme.spec, ...legal } }] };
+  assert.ok(schemas.provision(withLegal), `loginTheme with the legal links: ${schemas.ajv.errorsText(schemas.provision.errors)}`);
   // SSO-4042 — the email template example: magic_link in English and Dutch, each body a file beside the section.
   const templates = examples.filter((r) => r.kind === "emailTemplate");
   assert.deepEqual(templates.map((r) => `${r.spec.type}/${r.spec.locale}`).sort(), ["magic_link/en", "magic_link/nl"]);
