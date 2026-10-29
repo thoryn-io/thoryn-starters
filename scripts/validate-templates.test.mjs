@@ -1,12 +1,13 @@
 // SSO-3428 — the validator is the gate that keeps the starters unrendered and on the variable contract.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLACEHOLDER_TOKEN, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
 import { rmSync } from "node:fs";
+import YAML from "yaml";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const schemas = compileSchemas();
@@ -199,6 +200,50 @@ test("a commented example is not a declaration: the shipped sections carry them 
     assert.match(text, /^ {2}# - kind: (loginMethods|user)$/m, `${f} keeps its commented examples`);
   }
   assert.deepEqual(checkStarter(join(root, "starters/config"), schemas), []);
+});
+
+/** The commented `# - kind:` examples of a section, uncommented, as the `resources` of a tenant file. */
+function commentedExamples(text) {
+  const entries = [];
+  for (const line of text.split("\n")) {
+    if (/^ {2}# - kind: /.test(line)) entries.push([line.replace(/^ {2}# /, "  ")]);
+    else if (entries.length && /^ {2}# {3}/.test(line) && !entries.at(-1).done) entries.at(-1).push(line.replace(/^ {2}# /, "  "));
+    else if (entries.length) entries.at(-1).done = true;
+  }
+  return YAML.parse(`apiVersion: thoryn.io/tenant/v1\nresources:\n${entries.map((e) => e.join("\n")).join("\n")}\n`).resources;
+}
+
+/**
+ * SSO-4052 — identity-service's `{{variable}}` allowlist per email template type (oauthy
+ * servers/federation-members/identity-service/.../emailtemplates/EmailTemplateType.kt): a body naming any other variable is
+ * refused at apply with `400 unknown_template_variable`.
+ */
+const EMAIL_TEMPLATE_VARIABLES = { magic_link: ["magicLinkUrl", "displayName", "expiryMinutes"] };
+
+test("every commented example, uncommented, validates against the provisioning schema — and its email bodies exist and use only allowed variables", () => {
+  for (const f of [PRODUCTION, SANDBOX]) {
+    const examples = commentedExamples(readFileSync(join(root, "starters/config", f), "utf8"));
+    assert.ok(examples.length >= 3, `${f}: found its commented examples`);
+    const doc = { apiVersion: "thoryn.io/tenant/v1", resources: examples };
+    assert.ok(schemas.provision(doc), `${f}: ${schemas.ajv.errorsText(schemas.provision.errors)}`);
+  }
+  const examples = commentedExamples(readFileSync(join(root, "starters/config", PRODUCTION), "utf8"));
+  // SSO-4041 — the branding example shows the whole record (an undeclared field is cleared on apply).
+  const theme = examples.find((r) => r.kind === "loginTheme");
+  assert.deepEqual(Object.keys(theme.spec).sort(), ["backgroundColor", "borderRadiusPx", "cssVariables", "logoUrl", "primaryColor", "theme"]);
+  assert.equal(Object.keys(theme.spec.cssVariables).length, 4);
+  // SSO-4042 — the email template example: magic_link in English and Dutch, each body a file beside the section.
+  const templates = examples.filter((r) => r.kind === "emailTemplate");
+  assert.deepEqual(templates.map((r) => `${r.spec.type}/${r.spec.locale}`).sort(), ["magic_link/en", "magic_link/nl"]);
+  for (const r of templates) {
+    const allowed = EMAIL_TEMPLATE_VARIABLES[r.spec.type];
+    assert.ok(allowed, `${r.name}: add the allowlist of ${r.spec.type}`);
+    const body = join(root, "starters/config", dirname(PRODUCTION), r.spec.bodyFile);
+    assert.ok(existsSync(body), `${r.name}: ${r.spec.bodyFile} exists beside the section`);
+    const used = [...`${r.spec.subject}\n${readFileSync(body, "utf8")}`.matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*}}/g)].map((m) => m[1]);
+    assert.deepEqual(used.filter((v) => !allowed.includes(v)), [], `${r.name}: only ${allowed.join(", ")}`);
+    assert.ok(used.includes("magicLinkUrl"), `${r.name}: the body carries the sign-in link`);
+  }
 });
 
 test("a config sandbox section declares its own sandbox, read-only", () => {

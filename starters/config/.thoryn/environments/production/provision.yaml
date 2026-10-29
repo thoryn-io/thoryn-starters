@@ -1,7 +1,8 @@
 # PRODUCTION section of the workspace's TENANT provisioning (oauthy ADR 2026-10-25, provisioning is tenant and
 # applications). This config project is the ONE place that defines what the tenant IS: its environments, identity
 # sources (federationMember), users (sandbox test users included), sign-in (loginMethods, loginFlow, loginTheme),
-# email provider, custom domain, roles, and the workload identity trusts of the workspace's app projects.
+# email provider and email templates, custom domain, roles, and the workload identity trusts of the workspace's app
+# projects.
 # Applications are USERS of the tenant: each app project declares its own OAuth client in its own
 # thoryn.io/application/v1 file — never here. The engine refuses `kind: application` in this file.
 #
@@ -41,11 +42,43 @@ resources:
   #   spec:
   #     methods: ["password", "passkey"]
   #
-  # Branding of the hosted sign-in pages (tenant:idp.*):
+  # Branding of the hosted sign-in pages (tenant:idp.*). The spec is the WHOLE branding record: a field you do not
+  # declare is CLEARED on apply (the plan shows it as `→ (cleared)`), and `cssVariables` is replaced as one map. So
+  # declare every field you want kept. Colours are CSS hex; text and button colours must meet WCAG AA contrast.
   # - kind: loginTheme
   #   spec:
   #     logoUrl: "https://www.example.com/logo.svg"
   #     primaryColor: "#3d5afe"
+  #     backgroundColor: "#ffffff"
+  #     borderRadiusPx: 8
+  #     theme: "auto"
+  #     cssVariables:
+  #       "--thoryn-accent": "#3d5afe"
+  #       "--thoryn-text": "#1a1a1a"
+  #       "--thoryn-muted": "#5f6368"
+  #       "--thoryn-font-family": "Inter, Arial, sans-serif"
+  #
+  # Your own wording for the sign-in-link email, in English and Dutch (tenant:idp.*). One entry per template type and
+  # language; omit `locale` for the base template. Templates belong to the WORKSPACE, so no `environment:` (one set
+  # for every environment). A body may use only its type's variables; for magic_link those are {{magicLinkUrl}},
+  # {{displayName}} and {{expiryMinutes}}. The example bodies sit in emails/examples/ next to this file, apart from
+  # emails/<type>.html and emails/<type>.<locale>.html, where `thoryn provision import` writes the bodies it imports
+  # (the import never overwrites a different file there). Uncomment as is, or move the bodies into emails/ and
+  # update `bodyFile`.
+  # - kind: emailTemplate
+  #   name: magic-link
+  #   spec:
+  #     type: magic_link
+  #     locale: en
+  #     subject: "Your sign-in link"
+  #     bodyFile: emails/examples/magic_link.html
+  # - kind: emailTemplate
+  #   name: magic-link-nl
+  #   spec:
+  #     type: magic_link
+  #     locale: nl
+  #     subject: "Je inloglink"
+  #     bodyFile: emails/examples/magic_link.nl.html
   #
   # Your own SMTP server for production email (tenant:email.*). The password comes from the SMTP_PASSWORD environment
   # variable, never from this file. (The import renders an existing provider `readOnly: true`: the provisioning workflow
