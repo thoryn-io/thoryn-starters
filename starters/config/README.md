@@ -6,6 +6,7 @@ application code, and it is the one place that defines what the tenant is:
 - the environments (production and every sandbox);
 - per environment: sign-in methods, login flows, branding, the email provider, identity providers, users
   (sandbox test users included), roles and the custom domain;
+- for the whole workspace: the email templates;
 - the workload identity trusts of the workspace's application projects.
 
 Every file here declares `apiVersion: thoryn.io/tenant/v1`. Applications are **users** of the tenant: each
@@ -21,8 +22,8 @@ The setup must change nothing that already exists in your workspace. So both `pr
 - the production section **owns** it (`retain: true`: `destroy` and `--prune` never remove it);
 - the sandbox section **depends** on it (`readOnly: true`): plan reads it, apply never writes it.
 
-Everything else — login methods, branding, the email provider, identity providers, test users, roles, trusts,
-the custom domain — is a **commented example**. Merging the setup pull request therefore changes nothing: its
+Everything else — login methods, branding, the email provider, email templates, identity providers, test users,
+roles, trusts, the custom domain — is a **commented example**. Merging the setup pull request therefore changes nothing: its
 apply finds the sandbox as declared.
 
 What your workspace already has arrives in a **second pull request** that Thoryn opens after you merge the setup
@@ -97,7 +98,10 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
 ## Making changes
 
 1. Edit the section's `provision.yaml`. The commented examples show the login-methods, branding,
-   email-provider, identity-provider, role, test-user, trust and custom-domain resources.
+   email-provider, email-template, identity-provider, role, test-user, trust and custom-domain resources.
+   Email templates belong to the workspace, so they go in the production section, with no `environment:`.
+   The example bodies (the sign-in-link email in English and Dutch) are in
+   `.thoryn/environments/production/emails/examples/`.
 2. Both connections hold read and write for every tenant kind (`.thoryn/template.json`), so no resource
    needs a new scope. A project created before SSO-3993 has narrower trusts: add the missing scope to the
    trust and to the section's `connection.json`. For example, `emailProvider` needs `tenant:email.read` and
