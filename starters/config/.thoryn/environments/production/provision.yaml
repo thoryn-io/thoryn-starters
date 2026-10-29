@@ -45,6 +45,8 @@ resources:
   # Branding of the hosted sign-in pages (tenant:idp.*). The spec is the WHOLE branding record: a field you do not
   # declare is CLEARED on apply (the plan shows it as `→ (cleared)`), and `cssVariables` is replaced as one map. So
   # declare every field you want kept. Colours are CSS hex; text and button colours must meet WCAG AA contrast.
+  # Names and titles are plain text (no `<`, `>` or control characters). Links are https:// (supportUrl may also be a
+  # mailto: address), at most 2000 characters, with no spaces.
   # - kind: loginTheme
   #   spec:
   #     logoUrl: "https://www.example.com/logo.svg"
@@ -57,6 +59,17 @@ resources:
   #       "--thoryn-text": "#1a1a1a"
   #       "--thoryn-muted": "#5f6368"
   #       "--thoryn-font-family": "Inter, Arial, sans-serif"
+  #     # Your name as the sign-in pages show it: heading, logo alt text, default browser title (at most 80 characters).
+  #     displayName: "Example"
+  #     # The browser tab title, if it should differ from displayName (at most 120 characters).
+  #     pageTitle: "Sign in to Example"
+  #     # The browser tab icon.
+  #     faviconUrl: "https://www.example.com/favicon.ico"
+  #     # The footer's support link: a web page or a mailto: address.
+  #     supportUrl: "mailto:support@example.com"
+  #     # The footer's terms-of-service and privacy-policy links. Leave them unset to keep the default footer.
+  #     # termsUrl: "https://www.example.com/terms"
+  #     # privacyUrl: "https://www.example.com/privacy"
   #
   # Your own wording for the sign-in-link email, in English and Dutch (tenant:idp.*). One entry per template type and
   # language; omit `locale` for the base template. Templates belong to the WORKSPACE, so no `environment:` (one set
