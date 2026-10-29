@@ -305,21 +305,25 @@ test("every config connection requests read and write for every tenant kind", ()
   assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:roles\.read, tenant:roles\.write/);
 });
 
-test("every config connection requests the compliance scopes, which the legalDocument kind needs (SSO-4058)", () => {
-  assert.ok(TENANT_SCOPES.includes("tenant:compliance.read") && TENANT_SCOPES.includes("tenant:compliance.write"), TENANT_SCOPES.join(" "));
+test("every config connection requests the legal-documents scopes, which the legalDocument kind needs (SSO-4058)", () => {
+  const pair = ["tenant:legal-documents.read", "tenant:legal-documents.write"];
+  assert.ok(pair.every((s) => TENANT_SCOPES.includes(s)), TENANT_SCOPES.join(" "));
   const published = JSON.parse(readFileSync(join(root, "starters/config/.thoryn/template.json"), "utf8"));
   for (const [name, c] of Object.entries(published.connections)) {
-    assert.ok(c.scopes.includes("tenant:compliance.read") && c.scopes.includes("tenant:compliance.write"), `${name}: ${c.scopes.join(" ")}`);
+    assert.ok(pair.every((s) => c.scopes.includes(s)), `${name}: ${c.scopes.join(" ")}`);
+    // Product owner 2026-10-29: a config project's CI identity never gets tenant:compliance.* (erasure, DSAR, SCIM
+    // deprovision, SSF, consent purposes and retention ride compliance.write).
+    assert.ok(!c.scopes.some((s) => s.startsWith("tenant:compliance.")), `${name}: ${c.scopes.join(" ")}`);
   }
-  // A config template from before SSO-4058 (every other tenant kind, no compliance) fails the check, naming both scopes.
+  // A config template from before SSO-4058 (every other tenant kind, no legal-documents) fails the check, naming both scopes.
   const dir = copy("config");
   editJson(dir, ".thoryn/template.json", (m) => {
-    for (const c of Object.values(m.connections)) c.scopes = c.scopes.filter((s) => !s.startsWith("tenant:compliance."));
+    for (const c of Object.values(m.connections)) c.scopes = c.scopes.filter((s) => !s.startsWith("tenant:legal-documents."));
     return m;
   });
   const problems = checkStarter(dir, schemas).join("\n");
-  assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:compliance\.read, tenant:compliance\.write/);
-  assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:compliance\.read, tenant:compliance\.write/);
+  assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:legal-documents\.read, tenant:legal-documents\.write/);
+  assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:legal-documents\.read, tenant:legal-documents\.write/);
 });
 
 test("the pre-SSO-3993 config template (login methods declared, idp and environments scopes only) fails the check", () => {

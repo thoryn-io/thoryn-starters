@@ -69,11 +69,11 @@ gh variable set THORYN_STARTERS_WIF_ASPNET_CORE -R thoryn-io/thoryn-starters --b
 
 # The config starter: CI only PLANS its sandbox section (read-only); it never touches a production plane.
 thoryn env create ci-config --name "Sandbox ci-config"
-# Exactly the config `sandbox` connection's scopes: read and write for every tenant kind (SSO-3993, compliance since
-# SSO-4058). The job signs in requesting all of them, so a fixture trust created before SSO-3993 or SSO-4058 needs them
+# Exactly the config `sandbox` connection's scopes: read and write for every tenant kind (SSO-3993, legal-documents
+# since SSO-4058). The job signs in requesting all of them, so a fixture trust created before SSO-3993 or SSO-4058 needs them
 # added with `trusts set-scopes` (a passkey sign-in from the last five minutes).
 config_scopes=()
-for area in workload-identity access environments applications users idp federation email domains roles compliance; do
+for area in workload-identity access environments applications users idp federation email domains roles legal-documents; do
   config_scopes+=(--scope "tenant:$area.read" --scope "tenant:$area.write")
 done
 thoryn workload-identity trusts create --environment ci-config --name thoryn-starters-config \
