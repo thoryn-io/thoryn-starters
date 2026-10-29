@@ -72,12 +72,13 @@ resources:
   #     # privacyUrl: "https://www.example.com/privacy"
   #
   # Your own wording for the sign-in-link email, in English and Dutch (tenant:idp.*). One entry per template type and
-  # language; omit `locale` for the base template. Templates belong to the WORKSPACE, so no `environment:` (one set
-  # for every environment). A body may use only its type's variables; for magic_link those are {{magicLinkUrl}},
+  # language; omit `locale` for the base template. Templates are per environment: these have no `environment:`, so
+  # they are production's, and a sandbox that declares no copy of its own sends production's (that is not drift; see
+  # the sandbox section). A body may use only its type's variables; for magic_link those are {{magicLinkUrl}},
   # {{displayName}} and {{expiryMinutes}}. The example bodies sit in emails/examples/ next to this file, apart from
-  # emails/<type>.html and emails/<type>.<locale>.html, where `thoryn provision import` writes the bodies it imports
-  # (the import never overwrites a different file there). Uncomment as is, or move the bodies into emails/ and
-  # update `bodyFile`.
+  # emails/<type>.html and emails/<type>.<locale>.html, where `thoryn provision import` writes the production bodies
+  # it imports (a sandbox's go to emails/<sandbox-slug>/; the import never overwrites a different file there).
+  # Uncomment as is, or move the bodies into emails/ and update `bodyFile`.
   # - kind: emailTemplate
   #   name: magic-link
   #   spec:

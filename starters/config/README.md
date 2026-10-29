@@ -4,9 +4,8 @@ The **config project** of a Thoryn workspace: its **tenant provisioning**. It ho
 application code, and it is the one place that defines what the tenant is:
 
 - the environments (production and every sandbox);
-- per environment: sign-in methods, login flows, branding, the email provider, identity providers, users
-  (sandbox test users included), roles and the custom domain;
-- for the whole workspace: the email templates;
+- per environment: sign-in methods, login flows, branding, the email provider, the email templates, identity
+  providers, users (sandbox test users included), roles and the custom domain;
 - the workload identity trusts of the workspace's application projects.
 
 Every file here declares `apiVersion: thoryn.io/tenant/v1`. Applications are **users** of the tenant: each
@@ -38,7 +37,9 @@ thoryn provision import --file .thoryn/environments/production/provision.yaml   
 ```
 
 Move each sandbox's entries to that sandbox's section, and drop any `kind: application` entry: an application
-belongs to its own app project, and a tenant file refuses it.
+belongs to its own app project, and a tenant file refuses it. The import writes a sandbox's email template bodies
+to `emails/<sandbox-slug>/` beside the production file; move that folder beside the sandbox section along with the
+entries, and their `bodyFile` stays as it is.
 
 From then on, this repository is how the workspace's configuration changes.
 
@@ -99,9 +100,10 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
 
 1. Edit the section's `provision.yaml`. The commented examples show the login-methods, branding,
    email-provider, email-template, identity-provider, role, test-user, trust and custom-domain resources.
-   Email templates belong to the workspace, so they go in the production section, with no `environment:`.
-   The example bodies (the sign-in-link email in English and Dutch) are in
-   `.thoryn/environments/production/emails/examples/`.
+   Email templates are per environment. A sandbox that declares no copy of its own sends production's, so
+   declare them in the production section, with no `environment:`, and give a sandbox its own only to try new
+   wording there first (with `environment:` in the sandbox section). The example bodies (the sign-in-link email
+   in English and Dutch) are in `.thoryn/environments/production/emails/examples/`.
 2. Both connections hold read and write for every tenant kind (`.thoryn/template.json`), so no resource
    needs a new scope. A project created before SSO-3993 has narrower trusts: add the missing scope to the
    trust and to the section's `connection.json`. For example, `emailProvider` needs `tenant:email.read` and
