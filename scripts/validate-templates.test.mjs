@@ -256,6 +256,15 @@ test("every commented example, uncommented, validates against the provisioning s
     assert.deepEqual(used.filter((v) => !allowed.includes(v)), [], `${r.name}: only ${allowed.join(", ")}`);
     assert.ok(used.includes("magicLinkUrl"), `${r.name}: the body carries the sign-in link`);
   }
+  // SSO-4054 (cli-v0.54.0) — templates are per environment. The examples are production's (no `environment:`), and the
+  // sandbox section's note holds: the same template declared in the sandbox, with its environment, validates.
+  assert.deepEqual(templates.filter((r) => "environment" in r).map((r) => r.name), [], "the email template examples are production's");
+  const sandboxCopy = { ...templates[0], name: "magic-link-sandbox", environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}" };
+  assert.ok(
+    schemas.provision({ apiVersion: "thoryn.io/tenant/v1", resources: [sandboxCopy] }),
+    `a sandbox's own emailTemplate: ${schemas.ajv.errorsText(schemas.provision.errors)}`,
+  );
+  assert.match(readFileSync(join(root, "starters/config", SANDBOX), "utf8"), /^ {2}# .*emailTemplate.*\n {2}# `environment: "\{\{env\.THORYN_SANDBOX_ENVIRONMENT\}\}"`/m, "the sandbox section says how it declares its own email template");
 });
 
 test("a config sandbox section declares its own sandbox, read-only", () => {

@@ -34,6 +34,11 @@ resources:
   #   spec:
   #     methods: ["password", "passkey", "magic_code", "magic_link"]
   #
+  # Email templates (tenant:idp.*): the sandbox sends production's (see the emailTemplate examples in the production
+  # section) until it declares its own. To try new wording here first, declare an emailTemplate in this file with
+  # `environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"` and its body file beside this file, apply, check the email in
+  # the test inbox, then declare it in production's section.
+  #
   # A sandbox TEST USER (tenant:users.*). An app project references it by email in its test configuration; it never
   # creates one. The password comes from an environment variable, never from this file.
   # - kind: user
