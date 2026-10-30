@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PLACEHOLDER_TOKEN, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
+import { PLACEHOLDER_TOKEN, TENANT_SCOPES, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
 import { rmSync } from "node:fs";
 import YAML from "yaml";
 
@@ -265,6 +265,25 @@ test("every commented example, uncommented, validates against the provisioning s
     `a sandbox's own emailTemplate: ${schemas.ajv.errorsText(schemas.provision.errors)}`,
   );
   assert.match(readFileSync(join(root, "starters/config", SANDBOX), "utf8"), /^ {2}# .*emailTemplate.*\n {2}# `environment: "\{\{env\.THORYN_SANDBOX_ENVIRONMENT\}\}"`/m, "the sandbox section says how it declares its own email template");
+  // SSO-4058 (cli-v0.55.0, thoryn-cli SSO-4057) — the legal-document examples: production's two types without `environment:`,
+  // the sandbox's own copy with it; Markdown bodies next to the section where the import writes the active version.
+  const legalDocs = examples.filter((r) => r.kind === "legalDocument");
+  assert.deepEqual(legalDocs.map((r) => r.spec.type).sort(), ["privacy-policy", "terms-of-use"]);
+  for (const r of legalDocs) {
+    assert.deepEqual(Object.keys(r.spec).sort(), ["bodyFile", "format", "title", "type", "version"], `${r.name}: the shape thoryn-cli #194 shipped`);
+    assert.equal(r.spec.format, "markdown");
+    assert.equal(r.spec.bodyFile, `legal/${r.spec.type}.md`, `${r.name}: the path the import writes the active version to`);
+    assert.ok(!("environment" in r), `${r.name}: production's`);
+  }
+  assert.match(production, /legal-documents\.\*[\s\S]*PER ENVIRONMENT[\s\S]*no fallback[\s\S]*no HTML/, "the example says: per environment, no fallback, HTML refused");
+  const sandboxLegal = commentedExamples(readFileSync(join(root, "starters/config", SANDBOX), "utf8")).filter((r) => r.kind === "legalDocument");
+  assert.deepEqual(sandboxLegal.map((r) => [r.spec.type, r.environment, r.spec.bodyFile]), [["terms-of-use", "{{env.THORYN_SANDBOX_ENVIRONMENT}}", "legal/{{env.THORYN_SANDBOX_ENVIRONMENT}}/terms-of-use.md"]]);
+  // An HTML body is what the kind refuses: the schema's inline-body pattern says so (the file rule is the CLI's at load time).
+  const html = { ...legalDocs[0], spec: { ...legalDocs[0].spec, bodyFile: undefined, body: "<p>Terms</p>" } };
+  delete html.spec.bodyFile;
+  assert.ok(!schemas.provision({ apiVersion: "thoryn.io/tenant/v1", resources: [html] }), "an inline HTML body does not validate");
+  const autolink = { ...html, spec: { ...html.spec, body: "See <https://example.com/terms>." } };
+  assert.ok(schemas.provision({ apiVersion: "thoryn.io/tenant/v1", resources: [autolink] }), `a Markdown autolink validates: ${schemas.ajv.errorsText(schemas.provision.errors)}`);
 });
 
 test("a config sandbox section declares its own sandbox, read-only", () => {
@@ -303,6 +322,27 @@ test("every config connection requests read and write for every tenant kind", ()
   const problems = checkStarter(dir, schemas).join("\n");
   assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:email\.read/);
   assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:roles\.read, tenant:roles\.write/);
+});
+
+test("every config connection requests the legal-documents scopes, which the legalDocument kind needs (SSO-4058)", () => {
+  const pair = ["tenant:legal-documents.read", "tenant:legal-documents.write"];
+  assert.ok(pair.every((s) => TENANT_SCOPES.includes(s)), TENANT_SCOPES.join(" "));
+  const published = JSON.parse(readFileSync(join(root, "starters/config/.thoryn/template.json"), "utf8"));
+  for (const [name, c] of Object.entries(published.connections)) {
+    assert.ok(pair.every((s) => c.scopes.includes(s)), `${name}: ${c.scopes.join(" ")}`);
+    // Product owner 2026-10-29: a config project's CI identity never gets tenant:compliance.* (erasure, DSAR, SCIM
+    // deprovision, SSF, consent purposes and retention ride compliance.write).
+    assert.ok(!c.scopes.some((s) => s.startsWith("tenant:compliance.")), `${name}: ${c.scopes.join(" ")}`);
+  }
+  // A config template from before SSO-4058 (every other tenant kind, no legal-documents) fails the check, naming both scopes.
+  const dir = copy("config");
+  editJson(dir, ".thoryn/template.json", (m) => {
+    for (const c of Object.values(m.connections)) c.scopes = c.scopes.filter((s) => !s.startsWith("tenant:legal-documents."));
+    return m;
+  });
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /connection production: a config connection requests read and write for every tenant kind — missing tenant:legal-documents\.read, tenant:legal-documents\.write/);
+  assert.match(problems, /connection sandbox: a config connection requests read and write for every tenant kind — missing tenant:legal-documents\.read, tenant:legal-documents\.write/);
 });
 
 test("the pre-SSO-3993 config template (login methods declared, idp and environments scopes only) fails the check", () => {

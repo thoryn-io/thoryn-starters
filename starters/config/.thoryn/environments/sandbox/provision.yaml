@@ -49,6 +49,20 @@ resources:
   #     passwordEnv: THORYN_TEST_USER_PASSWORD
   #     emailVerified: true
   #
+  # The sandbox's own terms of use (tenant:legal-documents.*; cli-v0.55.0). Tenant provisioning PER ENVIRONMENT, with no
+  # fallback: a sandbox without a copy of its own shows none, so declare one here to try new wording before production
+  # does. Markdown or plain text, no HTML (refused). The text goes in legal/<sandbox-slug>/terms-of-use.md next to this
+  # file — the path `thoryn provision import` writes a sandbox's active version to.
+  # - kind: legalDocument
+  #   name: terms-of-use
+  #   environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
+  #   spec:
+  #     type: terms-of-use
+  #     version: "2026-10-draft"
+  #     title: "Terms of use (draft)"
+  #     format: markdown
+  #     bodyFile: legal/{{env.THORYN_SANDBOX_ENVIRONMENT}}/terms-of-use.md
+  #
   # An app project's CI identity in this sandbox (tenant:workload-identity.*): a repository never declares its own
   # trust, so the config project does. Its scopes: tenant:applications.read tenant:applications.write
   # tenant:access.read tenant:environments.read — and nothing wider.
