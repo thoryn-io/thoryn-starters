@@ -265,6 +265,25 @@ test("every commented example, uncommented, validates against the provisioning s
     `a sandbox's own emailTemplate: ${schemas.ajv.errorsText(schemas.provision.errors)}`,
   );
   assert.match(readFileSync(join(root, "starters/config", SANDBOX), "utf8"), /^ {2}# .*emailTemplate.*\n {2}# `environment: "\{\{env\.THORYN_SANDBOX_ENVIRONMENT\}\}"`/m, "the sandbox section says how it declares its own email template");
+  // SSO-4058 (cli-v0.55.0, thoryn-cli SSO-4057) — the legal-document examples: production's two types without `environment:`,
+  // the sandbox's own copy with it; Markdown bodies next to the section where the import writes the active version.
+  const legalDocs = examples.filter((r) => r.kind === "legalDocument");
+  assert.deepEqual(legalDocs.map((r) => r.spec.type).sort(), ["privacy-policy", "terms-of-use"]);
+  for (const r of legalDocs) {
+    assert.deepEqual(Object.keys(r.spec).sort(), ["bodyFile", "format", "title", "type", "version"], `${r.name}: the shape thoryn-cli #194 shipped`);
+    assert.equal(r.spec.format, "markdown");
+    assert.equal(r.spec.bodyFile, `legal/${r.spec.type}.md`, `${r.name}: the path the import writes the active version to`);
+    assert.ok(!("environment" in r), `${r.name}: production's`);
+  }
+  assert.match(production, /legal-documents\.\*[\s\S]*PER ENVIRONMENT[\s\S]*no fallback[\s\S]*no HTML/, "the example says: per environment, no fallback, HTML refused");
+  const sandboxLegal = commentedExamples(readFileSync(join(root, "starters/config", SANDBOX), "utf8")).filter((r) => r.kind === "legalDocument");
+  assert.deepEqual(sandboxLegal.map((r) => [r.spec.type, r.environment, r.spec.bodyFile]), [["terms-of-use", "{{env.THORYN_SANDBOX_ENVIRONMENT}}", "legal/{{env.THORYN_SANDBOX_ENVIRONMENT}}/terms-of-use.md"]]);
+  // An HTML body is what the kind refuses: the schema's inline-body pattern says so (the file rule is the CLI's at load time).
+  const html = { ...legalDocs[0], spec: { ...legalDocs[0].spec, bodyFile: undefined, body: "<p>Terms</p>" } };
+  delete html.spec.bodyFile;
+  assert.ok(!schemas.provision({ apiVersion: "thoryn.io/tenant/v1", resources: [html] }), "an inline HTML body does not validate");
+  const autolink = { ...html, spec: { ...html.spec, body: "See <https://example.com/terms>." } };
+  assert.ok(schemas.provision({ apiVersion: "thoryn.io/tenant/v1", resources: [autolink] }), `a Markdown autolink validates: ${schemas.ajv.errorsText(schemas.provision.errors)}`);
 });
 
 test("a config sandbox section declares its own sandbox, read-only", () => {

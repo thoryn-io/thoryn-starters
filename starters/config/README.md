@@ -99,11 +99,15 @@ thoryn provision plan --file .thoryn/environments/sandbox/provision.yaml
 ## Making changes
 
 1. Edit the section's `provision.yaml`. The commented examples show the login-methods, branding,
-   email-provider, email-template, identity-provider, role, test-user, trust and custom-domain resources.
+   email-provider, email-template, legal-document (terms of use and privacy policy), identity-provider, role,
+   test-user, trust and custom-domain resources.
    Email templates are per environment. A sandbox that declares no copy of its own sends production's, so
    declare them in the production section, with no `environment:`, and give a sandbox its own only to try new
    wording there first (with `environment:` in the sandbox section). The example bodies (the sign-in-link email
-   in English and Dutch) are in `.thoryn/environments/production/emails/examples/`.
+   in English and Dutch) are in `.thoryn/environments/production/emails/examples/`. Legal documents are per
+   environment too, with no fallback: a sandbox without its own shows none. Their text is a Markdown or plain-text
+   file next to the section (`legal/<type>.md`; a sandbox's `legal/<sandbox-slug>/<type>.md` — where the import
+   writes the active version), never HTML; new text needs a new `version`.
 2. Both connections hold read and write for every tenant kind (`.thoryn/template.json`), so no resource
    needs a new scope. A project created before SSO-3993 (or, for `tenant:legal-documents.*`, before SSO-4058) has
    narrower trusts: add the missing scope to the trust and to the section's `connection.json`. The wizard's Your

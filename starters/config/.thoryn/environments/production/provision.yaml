@@ -1,8 +1,8 @@
 # PRODUCTION section of the workspace's TENANT provisioning (oauthy ADR 2026-10-25, provisioning is tenant and
 # applications). This config project is the ONE place that defines what the tenant IS: its environments, identity
 # sources (federationMember), users (sandbox test users included), sign-in (loginMethods, loginFlow, loginTheme),
-# email provider and email templates, custom domain, roles, and the workload identity trusts of the workspace's app
-# projects.
+# email provider and email templates, terms of use and privacy policy, custom domain, roles, and the workload identity
+# trusts of the workspace's app projects.
 # Applications are USERS of the tenant: each app project declares its own OAuth client in its own
 # thoryn.io/application/v1 file — never here. The engine refuses `kind: application` in this file.
 #
@@ -93,6 +93,28 @@ resources:
   #     locale: nl
   #     subject: "Je inloglink"
   #     bodyFile: emails/examples/magic_link.nl.html
+  #
+  # The terms of use and privacy policy people accept at sign-in (tenant:legal-documents.*; cli-v0.55.0). Tenant
+  # provisioning PER ENVIRONMENT: this one, without `environment:`, is production's; a sandbox without a copy of its own
+  # shows none (there is no fallback). Markdown or plain text, no HTML (refused, never sanitised). The declaration names the
+  # ACTIVE version: new text needs a new `version` (a published version never changes). Write the text in
+  # legal/terms-of-use.md next to this file — the path `thoryn provision import` writes the active version to.
+  # - kind: legalDocument
+  #   name: terms-of-use
+  #   spec:
+  #     type: terms-of-use
+  #     version: "2026-10"
+  #     title: "Terms of use"
+  #     format: markdown
+  #     bodyFile: legal/terms-of-use.md
+  # - kind: legalDocument
+  #   name: privacy-policy
+  #   spec:
+  #     type: privacy-policy
+  #     version: "2026-10"
+  #     title: "Privacy policy"
+  #     format: markdown
+  #     bodyFile: legal/privacy-policy.md
   #
   # Your own SMTP server for production email (tenant:email.*). The password comes from the SMTP_PASSWORD environment
   # variable, never from this file. (The import renders an existing provider `readOnly: true`: the provisioning workflow
