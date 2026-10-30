@@ -39,8 +39,10 @@ resources:
   # `environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"` and its body file beside this file, apply, check the email in
   # the test inbox, then declare it in production's section.
   #
-  # A sandbox TEST USER (tenant:users.*). An app project references it by email in its test configuration; it never
-  # creates one. The password comes from an environment variable, never from this file.
+  # A sandbox USER (tenant:users.*): a real account in the sandbox — a developer's, a tester's — that the tenant declares
+  # and keeps. It is NOT what an app project's CI signs in with: an app project MINTS its own disposable test identity per
+  # run (`thoryn env test-identity create`, oauthy ADR 2026-10-30) and never declares or references a user. The password
+  # comes from an environment variable, never from this file.
   # - kind: user
   #   name: test-user
   #   environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"

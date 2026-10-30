@@ -30,4 +30,11 @@ if ! "$dir/thoryn" login --help 2>&1 | grep -q -- "--audience"; then
   echo "::error::thoryn $tag predates workload identity sign-in (SSO-3308). Use a newer cli-v* release (set THORYN_CLI_VERSION)."
   exit 1
 fi
+# Ephemeral sandbox test identities (`thoryn env test-identity`, SSO-4086, cli-v0.57.0): provision.sh mints the
+# account the e2e journey signs in with, and teardown.sh revokes it. An older release has no such command and
+# would fail there, after the apply; say it here.
+if ! "$dir/thoryn" env test-identity --help >/dev/null 2>&1; then
+  echo "::error::thoryn $tag predates ephemeral sandbox test identities (SSO-4086). Use cli-v0.57.0 or a newer cli-v* release (set THORYN_CLI_VERSION)."
+  exit 1
+fi
 "$dir/thoryn" --version || true

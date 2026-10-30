@@ -35,7 +35,9 @@ Needs:
 
 - oauthy #3787 (workload identity trusts, hub V191/V192) on staging;
 - a `thoryn` CLI release that carries SSO-3308 (thoryn-cli #94, workload identity sign-in);
-- a `thoryn` CLI release that carries SSO-3430 (`{{env.NAME}}` in a resource's `environment`).
+- a `thoryn` CLI release that carries SSO-3430 (`{{env.NAME}}` in a resource's `environment`);
+- cli-v0.57.0 or newer (SSO-4086, `thoryn env test-identity`): the application starters mint their test account
+  (`install-cli.sh` refuses an older release), and oauthy's test-identity API (SSO-4083..4085) on staging.
 
 ```bash
 export THORYN_ISSUER=https://auth.stg.thoryn.org
@@ -49,9 +51,12 @@ for stack in express spring-boot aspnet-core; do
   thoryn env create "ci-$stack" --name "thoryn-starters $stack CI"
   thoryn workload-identity trusts create --environment "ci-$stack" --name "thoryn-starters-$stack" \
     --repository thoryn-io/thoryn-starters --github-hosted-runners-only \
-    --scope tenant:applications.read --scope tenant:applications.write \
-    --scope tenant:users.read --scope tenant:users.write \
-    --scope tenant:environments.read --scope tenant:access.read
+    --scope tenant:applications.read --scope tenant:applications.write --scope tenant:access.read \
+    --scope tenant:environments.read --scope tenant:test-identities.write
+  # Exactly the application `sandbox` connection's scopes (APPLICATION_SCOPES in scripts/validate-templates.mjs). No
+  # tenant:users.*: the run MINTS its test account (SSO-4087). A fixture trust created before SSO-4087 holds
+  # tenant:users.read/.write and lacks tenant:test-identities.write; swap them with `trusts set-scopes` (a passkey
+  # sign-in from the last five minutes), or the job's sign-in is refused for requesting a scope the trust does not hold.
   # Note the clientId (wi_…) it prints, and the sandbox's id from `thoryn env list --output json`.
 done
 
@@ -92,6 +97,8 @@ pull requests too. Pull requests from forks get no OIDC token and skip.
 
 ## What a run leaves behind
 
-Nothing, when it finishes: `teardown.sh` runs `thoryn provision destroy`, which deletes the per-run test
-user and, if the run created it, the application client. A run killed before teardown leaves one test user
-(`e2e-<run id>-…@example.com`) in its sandbox; the next run is unaffected.
+Nothing, when it finishes: `teardown.sh` revokes the run's test identity (`thoryn env test-identity revoke`)
+and runs `thoryn provision destroy`, which deletes the application client if the run created it. A run killed
+before teardown leaves one test identity (labelled `<client name>-<run id>-<attempt>`, visible in `thoryn env
+test-identity list --env ci-<stack>`) in its sandbox until its two-hour lifetime ends and the platform purges it;
+the next run is unaffected (the sandbox cap is 25 live identities).

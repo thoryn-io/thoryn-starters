@@ -1,6 +1,9 @@
-// Local runs of the journey (SSO-3445). CI exports every value; on a developer machine they live in two
-// files .thoryn/ci/provision.sh writes: `.env` (OIDC_ISSUER, OIDC_CLIENT_ID, THORYN_WORKSPACE,
-// THORYN_ENVIRONMENT) and `.thoryn/local.env` (the generated sandbox test user, mode 0600, gitignored).
+// Local runs of the journey (SSO-3445). CI exports every value; on a developer machine the app's settings
+// come from the `.env` file .thoryn/ci/provision.sh writes (OIDC_ISSUER, OIDC_CLIENT_ID, THORYN_WORKSPACE,
+// THORYN_ENVIRONMENT). The test account is an ephemeral sandbox test identity exported into the shell by
+// `thoryn env test-identity create --output env` (SSO-4087): no starter writes it to a file any more, so the
+// journey's optional write-back of a reset password (`updateEnvFile`, THORYN_LOCAL_ENV_FILE) has nothing to
+// write to and is never armed.
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 

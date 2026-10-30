@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PLACEHOLDER_TOKEN, TENANT_SCOPES, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
+import { APPLICATION_SCOPES, PLACEHOLDER_TOKEN, TENANT_SCOPES, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
 import { rmSync } from "node:fs";
 import YAML from "yaml";
 
@@ -102,10 +102,75 @@ test("a plain-http redirect URI is loopback-only, names the localhost port, and 
   assert.match(checkStarter(config, schemas).join("\n"), /belongs on a sandbox client, never on production/);
 });
 
-test("every starter's .gitignore keeps the generated local test user out of git", () => {
+// SSO-4087 / SSO-3966 — an application project is APPLICATION provisioning, and its test account is minted, not declared.
+test("an application connection requests exactly the application scopes: tenant:users.* fails, a missing tenant:test-identities.write fails", () => {
+  assert.deepEqual(APPLICATION_SCOPES, ["tenant:applications.read", "tenant:applications.write", "tenant:access.read", "tenant:environments.read", "tenant:test-identities.write"]);
+  const dir = copy("express");
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.connections.sandbox.scopes = ["tenant:applications.read", "tenant:applications.write", "tenant:users.read", "tenant:users.write", "tenant:environments.read", "tenant:access.read"];
+    return m;
+  });
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /connection sandbox: requests tenant:users\.read — an application identity holds no tenant:users\.\* scope/);
+  assert.match(problems, /connection sandbox: requests tenant:users\.write — an application identity holds no tenant:users\.\* scope/);
+  assert.match(problems, /connection sandbox: an application connection requests exactly .* — missing tenant:test-identities\.write/);
+
+  const extra = copy("spring-boot");
+  editJson(extra, ".thoryn/template.json", (m) => {
+    m.connections.sandbox.scopes.push("tenant:roles.read");
+    return m;
+  });
+  assert.match(checkStarter(extra, schemas).join("\n"), /connection sandbox: requests tenant:roles\.read, which is not an application connection scope/);
+});
+
+test("an application file declares apiVersion thoryn.io/application/v1: the mixed provision/v1 fails", () => {
   const dir = copy("aspnet-core");
-  edit(dir, ".gitignore", (t) => t.replace(".thoryn/local.env", ""));
-  assert.match(checkStarter(dir, schemas).join("\n"), /\.gitignore must list \.thoryn\/local\.env/);
+  edit(dir, ".thoryn/provision.yaml", (t) => t.replace(/^apiVersion: thoryn\.io\/application\/v1$/m, "apiVersion: thoryn.io/provision/v1"));
+  assert.match(checkStarter(dir, schemas).join("\n"), /provision\.yaml: an application project is application provisioning — apiVersion must be thoryn\.io\/application\/v1, not thoryn\.io\/provision\/v1/);
+});
+
+test("an application file declares no user: the test account is minted per run, never declared", () => {
+  const dir = copy("express");
+  // In the mixed format, so only the user rule (not the CLI schema's application/v1 kind enum) is what fails here.
+  edit(dir, ".thoryn/provision.yaml", (t) => `${t.replace(/^apiVersion: thoryn\.io\/application\/v1$/m, "apiVersion: thoryn.io/provision/v1")}
+  - kind: user
+    name: test-user
+    environment: "{{env.THORYN_ENVIRONMENT}}"
+    spec:
+      email: "{{env.THORYN_TEST_USER_EMAIL}}"
+      passwordEnv: THORYN_TEST_USER_PASSWORD
+      emailVerified: true
+`);
+  const problems = checkStarter(dir, schemas).join("\n");
+  assert.match(problems, /provision\.yaml: an application project declares no user — the account its e2e signs in with is a test identity/);
+  // Its email is no longer a run-time value either: nothing in a starter sets THORYN_TEST_USER_EMAIL for the CLI to read.
+  assert.match(problems, /\{\{env\.THORYN_TEST_USER_EMAIL\}\} is neither a declared variable nor a run-time value/);
+});
+
+test("the pre-SSO-4087 application template (provision/v1 with a kind: user, tenant:users.* on the connection, a local.env file) fails the check", () => {
+  const dir = copy("spring-boot");
+  edit(dir, ".thoryn/provision.yaml", (t) => `${t.replace(/^apiVersion: thoryn\.io\/application\/v1$/m, "apiVersion: thoryn.io/provision/v1")}
+  - kind: user
+    name: test-user
+    environment: "{{env.THORYN_ENVIRONMENT}}"
+    spec:
+      email: "{{env.THORYN_TEST_USER_EMAIL}}"
+      passwordEnv: THORYN_TEST_USER_PASSWORD
+      givenName: "Test"
+      familyName: "User"
+      emailVerified: true
+`);
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.connections.sandbox.scopes = ["tenant:applications.read", "tenant:applications.write", "tenant:users.read", "tenant:users.write", "tenant:environments.read", "tenant:access.read"];
+    return m;
+  });
+  writeFileSync(join(dir, ".thoryn/local.env"), "THORYN_TEST_USER_EMAIL=dev@example.com\nTHORYN_TEST_USER_PASSWORD=x\n", { mode: 0o600 });
+  const problems = checkStarter(dir, schemas);
+  assert.equal(problems.filter((p) => /apiVersion must be thoryn\.io\/application\/v1/.test(p)).length, 1, problems.join("\n"));
+  assert.equal(problems.filter((p) => /declares no user/.test(p)).length, 1, problems.join("\n"));
+  assert.equal(problems.filter((p) => /holds no tenant:users\.\* scope/.test(p)).length, 2, problems.join("\n"));
+  assert.equal(problems.filter((p) => /missing tenant:test-identities\.write/.test(p)).length, 1, problems.join("\n"));
+  assert.equal(problems.filter((p) => /\.thoryn\/local\.env is retired/.test(p)).length, 1, problems.join("\n"));
 });
 
 // SSO-3666 — the production deploy skeleton of an application starter.
