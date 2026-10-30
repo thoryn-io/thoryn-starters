@@ -1,17 +1,20 @@
 # What this application owns in Thoryn — converged by `thoryn provision apply --file .thoryn/provision.yaml`.
 #
-# An APPLICATION project declares only its own OAuth client and its own sandbox test user. The environment
-# and all workspace-wide sign-in configuration (login methods, branding, email, custom domain) belong to the
-# workspace's CONFIG project, never to an application.
+# An APPLICATION project declares only its own OAuth client: `apiVersion: thoryn.io/application/v1` (oauthy ADR
+# 2026-10-25, the tenant/application split). The environment, every user — sandbox test users included — and all
+# workspace-wide sign-in configuration (login methods, branding, email, custom domain) belong to the workspace's
+# CONFIG project (`thoryn.io/tenant/v1`), never to an application; the CLI refuses a tenant kind in this file.
+#
+# The account the e2e journey signs in with is not declared either: .thoryn/ci/provision.sh MINTS an ephemeral
+# sandbox test identity per run (`thoryn env test-identity create`, oauthy ADR 2026-10-30) and teardown.sh
+# revokes it. A test identity is an imperative mint with an expiry, not a fact the tenant keeps true.
 #
 # Nothing here is specific to one repository: the `thoryn` CLI fills in every `{{env.NAME}}` from the
 # environment when it reads the file.
 #   THORYN_ENVIRONMENT        the sandbox (a GitHub Actions variable in CI; export it locally)
 #   THORYN_APP_NAME           the client's display name, its converge key in the sandbox; .thoryn/ci/provision.sh
 #                             defaults it to the repository name
-#   THORYN_TEST_USER_EMAIL    the test user; CI creates a fresh one per run and deletes it afterwards
-#   THORYN_TEST_USER_PASSWORD (read through `passwordEnv`, never written anywhere)
-apiVersion: thoryn.io/provision/v1
+apiVersion: thoryn.io/application/v1
 resources:
   - kind: application
     name: web
@@ -33,13 +36,3 @@ resources:
       postLogoutRedirectUris:
         - "http://127.0.0.1/signed-out"
         - "http://localhost:8080/signed-out"
-
-  - kind: user
-    name: test-user
-    environment: "{{env.THORYN_ENVIRONMENT}}"
-    spec:
-      email: "{{env.THORYN_TEST_USER_EMAIL}}"
-      passwordEnv: THORYN_TEST_USER_PASSWORD
-      givenName: "Test"
-      familyName: "User"
-      emailVerified: true

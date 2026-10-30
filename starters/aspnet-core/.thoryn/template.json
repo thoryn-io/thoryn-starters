@@ -1,7 +1,7 @@
 {
   "apiVersion": "thoryn.io/starter-template/v2",
   "kind": "application",
-  "description": "An APPLICATION project: one web app, its OAuth application client and its own sandbox test user. It declares no environment and no workspace configuration (that is the workspace's CONFIG project). Nothing in the repository is rendered: the pipeline reads its wiring from the GitHub Actions variables below at run time. This file stays in the repository as the declaration of what the creation flow must set up.",
+  "description": "An APPLICATION project: one web app and its OAuth application client (apiVersion thoryn.io/application/v1). It declares no environment, no user and no workspace configuration (that is the workspace's CONFIG project); the account its e2e signs in with is an ephemeral sandbox test identity CI mints per run (thoryn env test-identity create) and revokes afterwards. Nothing in the repository is rendered: the pipeline reads its wiring from the GitHub Actions variables below at run time. This file stays in the repository as the declaration of what the creation flow must set up.",
   "variables": {
     "THORYN_ISSUER": {
       "level": "repository",
@@ -13,7 +13,7 @@
     },
     "THORYN_ENVIRONMENT": {
       "level": "repository",
-      "description": "Slug of the SANDBOX environment the application's client and test user live in, and that the workload identity trust is bound to."
+      "description": "Slug of the SANDBOX environment the application's client lives in, where its per-run test identity is minted, and that the workload identity trust is bound to."
     },
     "THORYN_WIF_CLIENT_ID": {
       "level": "repository",
@@ -22,7 +22,7 @@
   },
   "connections": {
     "sandbox": {
-      "description": "Who CI is: the workload identity trust in the sandbox. It provisions the app's client and a per-run test user, and reads the sandbox's test inbox.",
+      "description": "Who CI is: the workload identity trust in the sandbox. It provisions the app's client, mints one ephemeral test identity per run (tenant:test-identities.write, revoked at the end of the run) and reads the sandbox's test inbox. It holds no tenant:users.* scope: an application never defines a user of the tenant.",
       "production": false,
       "clientIdVariable": "THORYN_WIF_CLIENT_ID",
       "environmentVariable": "THORYN_ENVIRONMENT",
@@ -30,10 +30,9 @@
       "scopes": [
         "tenant:applications.read",
         "tenant:applications.write",
-        "tenant:users.read",
-        "tenant:users.write",
+        "tenant:access.read",
         "tenant:environments.read",
-        "tenant:access.read"
+        "tenant:test-identities.write"
       ],
       "grant": { "relation": "manager", "on": "environment" }
     }
