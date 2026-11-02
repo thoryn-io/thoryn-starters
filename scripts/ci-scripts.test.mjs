@@ -50,7 +50,7 @@ test("login.sh signs in as the connection: its client id variable, the composed 
     "--workspace", "acme",
     "--client-id", "wi_0123456789abcdef",
     "--audience", "https://acme.auth.stg.thoryn.org/dev",
-    "--scope", "tenant:applications.read tenant:applications.write tenant:users.read tenant:users.write tenant:environments.read tenant:access.read",
+    "--scope", "tenant:applications.read tenant:applications.write tenant:access.read tenant:environments.read tenant:test-identities.write",
   ]);
 });
 
@@ -179,30 +179,119 @@ test("provision.sh refuses production: an application project provisions into a 
   const res = run(r, "provision.sh", [], { THORYN_ENVIRONMENT: "production" });
   assert.equal(res.status, 1);
   assert.match(res.stderr, /provisions into a sandbox only/);
-  assert.equal(existsSync(join(r.dir, ".thoryn/local.env")), false, "no test user is generated for production");
   assert.throws(() => r.calls(), /ENOENT/);
 });
 
-test("provision.sh locally generates the test user once into .thoryn/local.env (0600), never prints the password, and reuses it", () => {
+// SSO-4087 — the test account is an ephemeral sandbox test identity (oauthy ADR 2026-10-30): minted by the CLI, never
+// declared in provision.yaml, never written to a file.
+test("provision.sh locally mints nothing and writes no test-user file: it prints the one eval line that mints a 24-hour test identity into your shell", () => {
   const r = localRepo({ issuer: "https://acme.auth.stg.thoryn.org", activeEnvironment: "dev" });
-  const first = run(r, "provision.sh", [], { USER: "Dana" });
-  const file = join(r.dir, ".thoryn/local.env");
-  assert.equal(statSync(file).mode & 0o777, 0o600);
-  const saved = Object.fromEntries(readFileSync(file, "utf8").split("\n").filter((l) => l.includes("=") && !l.startsWith("#")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
-  assert.match(saved.THORYN_TEST_USER_EMAIL, /^dev-dana-[0-9a-f]{6}@example\.com$/);
-  // Upper, lower, digit and a symbol, 36 characters: the sandbox password policy.
-  assert.match(saved.THORYN_TEST_USER_PASSWORD, /^Pw1![0-9a-f]{32}$/);
-  assert.ok(first.stdout.includes(`Test user: ${saved.THORYN_TEST_USER_EMAIL} (its password is in .thoryn/local.env)`), first.stdout);
-  assert.ok(!(first.stdout + first.stderr).includes(saved.THORYN_TEST_USER_PASSWORD.slice(4)), "the password is never printed");
+  const res = run(r, "provision.sh", [], { USER: "Dana" });
+  assert.equal(existsSync(join(r.dir, ".thoryn/local.env")), false, "the .thoryn/local.env mechanism is retired");
+  assert.ok(res.stdout.includes('eval "$(thoryn env test-identity create --env dev --lifetime PT24H --output env)"'), res.stdout);
+  assert.match(res.stdout, /mint again before you run it a second time/);
+  assert.ok(!r.calls().some((c) => c.startsWith("env test-identity")), "a script cannot export into its parent shell, so it does not mint: you do");
+  assert.deepEqual(r.calls().map((c) => c.split(" | ")[0]), ["provision plan --file .thoryn/provision.yaml", "provision apply --file .thoryn/provision.yaml --yes"]);
 
-  // A re-run reuses the file unchanged.
-  const before = readFileSync(file, "utf8");
-  const again = run(r, "provision.sh", [], { USER: "Dana" });
-  assert.equal(readFileSync(file, "utf8"), before);
-  assert.ok(again.stdout.includes(`Test user: ${saved.THORYN_TEST_USER_EMAIL}`));
+  // An exported pair (a sandbox user of your own) wins, and the hint is not printed.
+  const exported = run(r, "provision.sh", [], { THORYN_TEST_USER_EMAIL: "mine@example.com", THORYN_TEST_USER_PASSWORD: "x" });
+  assert.ok(exported.stdout.includes("Test user: mine@example.com (exported)"), exported.stdout);
+  assert.doesNotMatch(exported.stdout, /test-identity create/);
+  assert.ok(!(exported.stdout + exported.stderr).includes("THORYN_TEST_USER_PASSWORD=x"), "the password is never printed");
+});
 
-  // An exported value wins over the file (and the file is left as it is).
-  const exported = run(r, "provision.sh", [], { THORYN_TEST_USER_EMAIL: "mine@example.com" });
-  assert.ok(exported.stdout.includes("Test user: mine@example.com"));
-  assert.equal(readFileSync(file, "utf8"), before);
+/** An Actions-shaped repository: app-env.mjs stubbed (it is unit-tested on its own) and a `thoryn` that logs every call. */
+function actionsRepo() {
+  const r = repo("express");
+  writeFileSync(join(r.dir, ".thoryn/app-env.mjs"), "process.exit(0);\n");
+  const log = join(r.dir, "thoryn.log");
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash
+echo "$*" >> "${log}"
+`);
+  chmodSync(join(r.bin, "thoryn"), 0o755);
+  return { ...r, calls: () => readFileSync(log, "utf8").trim().split("\n") };
+}
+
+const actions = { ...app, GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "acme/shop", GITHUB_RUN_ID: "41094232255", GITHUB_RUN_ATTEMPT: "2" };
+
+test("provision.sh in Actions mints one test identity per run, after the sandbox sign-in and the apply, into $GITHUB_ENV through the CLI", () => {
+  const r = actionsRepo();
+  const githubEnv = join(r.dir, "github.env");
+  const res = run(r, "provision.sh", [], { ...actions, GITHUB_ENV: githubEnv });
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const calls = r.calls();
+  assert.equal(calls.length, 4, calls.join("\n"));
+  assert.match(calls[0], /^login --workload-identity /);
+  assert.equal(calls[1], "provision plan --file .thoryn/provision.yaml");
+  assert.equal(calls[2], "provision apply --file .thoryn/provision.yaml --yes");
+  // The mint: the sandbox named explicitly, the label = the client's name (the repository) + the run, github-env output
+  // (the CLI prints ::add-mask:: first, then appends the three THORYN_TEST_* variables for the next steps).
+  assert.equal(calls[3], "env test-identity create --env dev --label shop-41094232255-2 --output github-env");
+  // The script itself handles no credential any more: it exports only the client's name.
+  assert.equal(readFileSync(githubEnv, "utf8"), "THORYN_APP_NAME=shop\n");
+  assert.doesNotMatch(res.stdout, /::add-mask::/);
+  assert.equal(existsSync(join(r.dir, ".thoryn/local.env")), false);
+});
+
+test("provision.sh in Actions: the label is the sanitised client name (THORYN_APP_NAME) plus the run, within the API's 64-character grammar", () => {
+  const r = actionsRepo();
+  run(r, "provision.sh", [], { ...actions, GITHUB_ENV: join(r.dir, "github.env"), THORYN_APP_NAME: "My Shop (staging)!" });
+  assert.equal(r.calls().at(-1), "env test-identity create --env dev --label My-Shop--staging---41094232255-2 --output github-env");
+
+  const long = actionsRepo();
+  run(long, "provision.sh", [], { ...actions, GITHUB_ENV: join(long.dir, "github.env"), THORYN_APP_NAME: "a".repeat(100) });
+  const label = long.calls().at(-1).match(/--label (\S+)/)[1];
+  assert.equal(label, `${"a".repeat(40)}-41094232255-2`);
+  assert.ok(label.length <= 64 && /^[A-Za-z0-9._-]{1,64}$/.test(label), label);
+});
+
+test("provision.sh in Actions mints nothing when the sign-in or the apply fails", () => {
+  const r = actionsRepo();
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash
+echo "$*" >> "${join(r.dir, "thoryn.log")}"
+[[ "$1" == "provision" && "$2" == "apply" ]] && exit 1
+exit 0
+`);
+  const res = run(r, "provision.sh", [], { ...actions, GITHUB_ENV: join(r.dir, "github.env") });
+  assert.notEqual(res.status, 0);
+  assert.ok(!r.calls().some((c) => c.startsWith("env test-identity")), r.calls().join("\n"));
+});
+
+test("teardown.sh revokes the run's test identity in its sandbox, then destroys what the apply created; each part runs even when the other fails", () => {
+  const r = actionsRepo();
+  writeFileSync(join(r.dir, ".thoryn/provision.receipt.json"), "{}");
+  const res = run(r, "teardown.sh", [], { ...actions, THORYN_TEST_IDENTITY_ID: "5d1c2b3a-0000-4000-8000-000000000001" });
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.deepEqual(r.calls(), [
+    "env test-identity revoke 5d1c2b3a-0000-4000-8000-000000000001 --env dev",
+    "provision destroy --file .thoryn/provision.yaml --yes",
+  ]);
+
+  // A failing revoke (the identity already expired and purged, a network blip) does not skip the destroy, and the step is red.
+  const failing = actionsRepo();
+  writeFileSync(join(failing.dir, ".thoryn/provision.receipt.json"), "{}");
+  writeFileSync(join(failing.bin, "thoryn"), `#!/usr/bin/env bash
+echo "$*" >> "${join(failing.dir, "thoryn.log")}"
+[[ "$1 $2 $3" == "env test-identity revoke" ]] && exit 1
+exit 0
+`);
+  const red = run(failing, "teardown.sh", [], { ...actions, THORYN_TEST_IDENTITY_ID: "ti-1" });
+  assert.equal(red.status, 1);
+  assert.equal(failing.calls().length, 2, failing.calls().join("\n"));
+  assert.equal(failing.calls()[1], "provision destroy --file .thoryn/provision.yaml --yes");
+});
+
+test("teardown.sh with no identity minted and no receipt calls the CLI for nothing and exits 0", () => {
+  const r = actionsRepo();
+  const res = run(r, "teardown.sh", [], actions);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.match(res.stdout, /No test identity to revoke/);
+  assert.match(res.stdout, /Nothing to destroy/);
+  assert.throws(() => r.calls(), /ENOENT/);
+
+  // Only the identity (provision.sh failed after the mint, or the receipt is gone): revoke it, and without a sandbox in the
+  // environment the CLI's selected environment applies.
+  const only = actionsRepo();
+  run(only, "teardown.sh", [], { GITHUB_ACTIONS: "true", THORYN_TEST_IDENTITY_ID: "ti-2" });
+  assert.deepEqual(only.calls(), ["env test-identity revoke ti-2"]);
 });

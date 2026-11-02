@@ -8,8 +8,11 @@
 //    Actions variables of its kind (the fixed contract the starter orchestrator sets), at the right level;
 //  - every connection's variables are declared, its provisioning file exists and validates against the
 //    CLI's provisioning schema, and every `{{env.NAME}}` in it is a declared variable or a run-time value;
-//  - an APPLICATION project declares only application and user resources, all in the sandbox its
-//    connection names, and its client accepts the app's default local callbacks (SSO-3445); plain-http
+//  - an APPLICATION project is APPLICATION provisioning (SSO-4087 / SSO-3966, oauthy ADR 2026-10-25): its file declares
+//    `apiVersion: thoryn.io/application/v1` and only `application` resources, all in the sandbox its connection names
+//    — no `user`: the account its e2e signs in with is an ephemeral sandbox test identity .thoryn/ci/provision.sh MINTS
+//    per run (oauthy ADR 2026-10-30), so its connection requests exactly APPLICATION_SCOPES, with
+//    `tenant:test-identities.write` and never `tenant:users.*`; its client accepts the app's default local callbacks (SSO-3445); plain-http
 //    redirect URIs are loopback-only and only ever on a sandbox client, never on production; a CONFIG project's production section declares every sandbox, and each sandbox
 //    section converges only its own sandbox;
 //  - an APPLICATION project's workflows read only declared variables (plus THORYN_CLI_VERSION and the production
@@ -69,8 +72,12 @@ export const VARIABLE_CONTRACT = {
   },
 };
 
-/** `{{env.NAME}}` values a provisioning file may read that are not Actions variables (set per run). */
-const RUNTIME_ENV = new Set(["THORYN_APP_NAME", "THORYN_TEST_USER_EMAIL", "THORYN_TEST_USER_PASSWORD"]);
+/**
+ * `{{env.NAME}}` values a provisioning file may read that are not Actions variables (set per run). The test account's
+ * THORYN_TEST_USER_EMAIL / THORYN_TEST_USER_PASSWORD are no longer among them (SSO-4087): a test identity is minted by
+ * the CLI, never declared in a provisioning file.
+ */
+const RUNTIME_ENV = new Set(["THORYN_APP_NAME"]);
 /** The variable the production deploy job reads (set by the config project, never by the creation flow). */
 export const PRODUCTION_CLIENT_ID_VARIABLE = "THORYN_PRODUCTION_CLIENT_ID";
 /** The GitHub environment the production deploy job runs in and that variable lives in. */
@@ -86,7 +93,24 @@ export const PRODUCTION_GITHUB_ENVIRONMENT = "production";
 const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION", PRODUCTION_CLIENT_ID_VARIABLE]);
 /** SSO-3971 — the part a config project's sections declare (thoryn-cli SSO-3962, oauthy ADR 2026-10-25). */
 export const TENANT_API_VERSION = "thoryn.io/tenant/v1";
-const APP_KINDS = new Set(["application", "user"]);
+/** SSO-4087 / SSO-3966 — the part an application project's file declares (thoryn-cli SSO-3962, oauthy ADR 2026-10-25). */
+export const APPLICATION_API_VERSION = "thoryn.io/application/v1";
+/**
+ * SSO-4087 — EXACTLY the scopes of an application project's sandbox connection (oauthy ADR 2026-10-30 §7): the application
+ * file's own ceiling (`applications`, plus `access` for the ownership check — thoryn-cli `ScopeRequirements`
+ * APPLICATION_FILE_SCOPES), and the two sandbox TOOL scopes a trust of an application file may hold since cli-v0.57.0:
+ * `tenant:environments.read` (the test inbox, and `--env <slug>` resolution) and `tenant:test-identities.write` (the mint
+ * and the revoke of the per-run test identity). Never `tenant:users.*`: an application defines no user of the tenant, and
+ * the mint is what replaced that scope. The wizard grants exactly this set to a new application project's trust
+ * (thoryn-provisioning SSO-4088); a connection asking for more is refused `scope_not_grantable`.
+ */
+export const APPLICATION_SCOPES = [
+  "tenant:applications.read",
+  "tenant:applications.write",
+  "tenant:access.read",
+  "tenant:environments.read",
+  "tenant:test-identities.write",
+];
 /**
  * SSO-3993 — the scope areas of every tenant kind, `tenant:<area>.read` and `.write` each: thoryn-cli
  * `ScopeRequirements.AREAS` (the product-api gate of each provisioning kind) plus `access` (the ownership check and
@@ -247,8 +271,24 @@ export function checkStarter(dir, schemas) {
       }
     }
     if (manifest.kind === "application") {
+      if (doc?.apiVersion !== APPLICATION_API_VERSION) {
+        fail(`${c.provisionFile}: an application project is application provisioning — apiVersion must be ${APPLICATION_API_VERSION}, not ${doc?.apiVersion}`);
+      }
       for (const r of resources) {
-        if (!APP_KINDS.has(r.kind)) fail(`${c.provisionFile}: an application project must not declare a '${r.kind}' (that belongs to the workspace config project)`);
+        if (r.kind === "user") {
+          fail(`${c.provisionFile}: an application project declares no user — the account its e2e signs in with is a test identity .thoryn/ci/provision.sh mints per run (thoryn env test-identity create); a real sandbox user is the workspace config project's`);
+        } else if (r.kind !== "application") {
+          fail(`${c.provisionFile}: an application project must not declare a '${r.kind}' (that belongs to the workspace config project)`);
+        }
+      }
+      const missing = APPLICATION_SCOPES.filter((s) => !c.scopes.includes(s));
+      if (missing.length) fail(`connection ${name}: an application connection requests exactly ${APPLICATION_SCOPES.join(", ")} — missing ${missing.join(", ")}`);
+      for (const s of c.scopes.filter((x) => !APPLICATION_SCOPES.includes(x))) {
+        if (/^tenant:users\./.test(s)) {
+          fail(`connection ${name}: requests ${s} — an application identity holds no tenant:users.* scope (oauthy ADR 2026-10-30): its test account is minted with tenant:test-identities.write, and a user of the tenant is declared by the config project`);
+        } else {
+          fail(`connection ${name}: requests ${s}, which is not an application connection scope (exactly ${APPLICATION_SCOPES.join(", ")})`);
+        }
       }
       // SSO-3445 — works out of the box locally: the sandbox client accepts the app's default local
       // callbacks, on 127.0.0.1 (any port, RFC 8252) and on localhost at the default port (matched exactly).
@@ -346,9 +386,9 @@ export function checkStarter(dir, schemas) {
       if (!productionJobs) fail(`no workflow job runs in GitHub environment ${PRODUCTION_GITHUB_ENVIRONMENT} (the production deploy job)`);
     }
   }
-  // SSO-3445 — the generated local test user (.thoryn/local.env) must never be committed.
-  const gitignore = existsSync(join(dir, ".gitignore")) ? readFileSync(join(dir, ".gitignore"), "utf8").split("\n") : [];
-  if (!gitignore.includes(".thoryn/local.env")) fail(".gitignore must list .thoryn/local.env (the local sandbox test user)");
+  // SSO-4087 — the generated local test-user file (.thoryn/local.env, SSO-3445) is retired: the test identity is minted
+  // into the developer's shell and never written to disk, so no starter may carry or read that file.
+  if (existsSync(join(dir, ".thoryn/local.env"))) fail(".thoryn/local.env is retired (SSO-4087): the test identity is minted into the shell, never written to a file");
   if (existsSync(join(dir, ".thoryn/connection.json"))) fail(".thoryn/connection.json is gone: sign-in is declared by template.json connections");
   return problems;
 }

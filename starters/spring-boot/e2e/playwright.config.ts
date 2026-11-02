@@ -2,13 +2,11 @@ import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { fillFromEnvFile } from "./lib/local-env.mjs";
 
-// A local run (not CI) reads what .thoryn/ci/provision.sh wrote: the app's settings from ../.env and the
-// generated sandbox test user from ../.thoryn/local.env. An exported value always wins.
-if (!process.env.CI) {
-  fillFromEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
-  const localEnv = fileURLToPath(new URL("../.thoryn/local.env", import.meta.url));
-  if (fillFromEnvFile(localEnv).includes("THORYN_TEST_USER_PASSWORD")) process.env.THORYN_LOCAL_ENV_FILE = localEnv;
-}
+// A local run (not CI) reads the app's settings .thoryn/ci/provision.sh wrote to ../.env. The test account is
+// never in a file: `eval "$(thoryn env test-identity create --lifetime PT24H --output env)"` exports
+// THORYN_TEST_USER_EMAIL / THORYN_TEST_USER_PASSWORD into your shell (an ephemeral sandbox test identity,
+// oauthy ADR 2026-10-30; see the README). An exported value always wins.
+if (!process.env.CI) fillFromEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
 
 // The journey signs a real test user in to the running app against the real sandbox, so it is slow-ish
 // and must never run its tests in parallel (one of them changes the test user's password).

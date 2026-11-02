@@ -9,7 +9,7 @@
   "properties": {
     "apiVersion": { "const": "thoryn.io/starter-template/v2" },
     "kind": {
-      "description": "`application`: one app, its own client(s) and sandbox test users. `config`: the workspace's configuration, one section per connection.",
+      "description": "`application`: one app and its own client(s); its e2e signs in with an ephemeral sandbox test identity its CI mints per run, never a user it declares (SSO-4087). `config`: the workspace's configuration, one section per connection.",
       "enum": ["application", "config"]
     },
     "description": { "type": "string", "minLength": 1 },

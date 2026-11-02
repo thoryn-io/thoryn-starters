@@ -6,7 +6,7 @@
 # variables (Settings → Secrets and variables → Actions → Variables), read at run time:
 #   THORYN_ISSUER         the platform base issuer, e.g. https://auth.stg.thoryn.org
 #   THORYN_WORKSPACE      the workspace
-#   THORYN_ENVIRONMENT    the sandbox the app's client and test user live in
+#   THORYN_ENVIRONMENT    the sandbox the app's client lives in (its per-run test identity is minted there)
 #   THORYN_WIF_CLIENT_ID  the workload identity trust's clientId (wi_…)
 # A missing variable fails the run and names it.
 name: CI
@@ -100,6 +100,6 @@ jobs:
             e2e/test-results
             app.log
           retention-days: 7
-      - name: Remove what this run created
+      - name: Remove what this run created (revoke the test identity, destroy what the apply created)
         if: always()
         run: .thoryn/ci/teardown.sh

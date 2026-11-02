@@ -17,9 +17,9 @@ A workspace is configured by **one config project** and used by **many applicati
 |---|---|---|
 | How many | One per workspace | Many per workspace |
 | Contains | Configuration only, no app code | An app (Spring Boot, ASP.NET Core, Express) |
-| Provisioning declares | **Tenant provisioning** (`apiVersion: thoryn.io/tenant/v1`, one file per section under `.thoryn/environments/<section>/`): environments, federation members / IdPs, users (sandbox test users included), login methods, login flows, branding, email provider, custom domain, roles. Production and every sandbox are sections. | Its own OAuth application client(s) in `.thoryn/provision.yaml`, plus (until the application starters move to `thoryn.io/application/v1`) its own sandbox test user. No environment, no workspace configuration. |
+| Provisioning declares | **Tenant provisioning** (`apiVersion: thoryn.io/tenant/v1`, one file per section under `.thoryn/environments/<section>/`): environments, federation members / IdPs, users (sandbox test users included), login methods, login flows, branding, email provider, custom domain, roles. Production and every sandbox are sections. | **Application provisioning** (`apiVersion: thoryn.io/application/v1`, `.thoryn/provision.yaml`): its own OAuth application client(s). No environment, no user, no workspace configuration. The account its e2e signs in with is not declared: CI **mints** an ephemeral sandbox test identity per run (`thoryn env test-identity create`, oauthy ADR 2026-10-30) and revokes it afterwards. |
 | Sign-in (`connections` in `.thoryn/template.json`) | One per environment section. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | One: the sandbox the app runs against. |
-| CI | The provisioning **stub** the creation flow seeds (`.github/workflows/thoryn-provisioning.yml`, calling thoryn-cli's reusable workflow at a `cli-v*` release), dispatched by the Thoryn GitHub App: `thoryn provision plan` on pull requests (read-only plan profile), `apply` on `main` behind the reviewed production environment. The template itself ships no workflow (SSO-3971). | Build, unit tests, `thoryn provision apply` to the sandbox, a Playwright sign-in journey, teardown. Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
+| CI | The provisioning **stub** the creation flow seeds (`.github/workflows/thoryn-provisioning.yml`, calling thoryn-cli's reusable workflow at a `cli-v*` release), dispatched by the Thoryn GitHub App: `thoryn provision plan` on pull requests (read-only plan profile), `apply` on `main` behind the reviewed production environment. The template itself ships no workflow (SSO-3971). | Build, unit tests, `thoryn provision apply` to the sandbox, one minted test identity, a Playwright sign-in journey, teardown (revoke the identity, destroy what the run created). Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
 | End result | A working sign-in stack, on the customer's own domain once one is configured. | A running app that signs users in and protects its API. |
 
 No project hard-codes its workspace, its environment or its issuer. The Actions variables name the
@@ -50,9 +50,12 @@ all:
 - `GET /health`: liveness.
 - Works out of the box from a local machine, with no Actions variable (SSO-3445):
   1. `thoryn login`, then `thoryn env use <sandbox>`.
-  2. `.thoryn/ci/provision.sh`. It creates a local client, generates a sandbox test user into
-     `.thoryn/local.env` (0600, gitignored, reused), and writes `.env`.
+  2. `.thoryn/ci/provision.sh`. It creates a local client and writes `.env`.
   3. Start the app: `npm start` / `./mvnw spring-boot:run` / `dotnet run`.
+  4. An account to sign in with: `eval "$(thoryn env test-identity create --lifetime PT24H --output env)"` mints
+     a disposable sandbox test identity (a day long, under your own login) into your shell as
+     `THORYN_TEST_USER_EMAIL` / `THORYN_TEST_USER_PASSWORD`; the e2e journey reads the same two. Nothing is
+     written to a file (SSO-4087 retired the generated `.thoryn/local.env` test user).
 
   The app reads `OIDC_ISSUER` and `OIDC_CLIENT_ID` from the environment or `.env`. With a loopback base URL,
   a GET on another loopback host is redirected to the same path and query on the base URL, so
@@ -108,19 +111,24 @@ All four are repository variables.
 |---|---|
 | `THORYN_ISSUER` | Platform base issuer the CLI signs in to, e.g. `https://auth.stg.thoryn.org`. |
 | `THORYN_WORKSPACE` | Workspace slug. |
-| `THORYN_ENVIRONMENT` | The sandbox the app, its client and its test user live in; the trust is bound to it. |
+| `THORYN_ENVIRONMENT` | The sandbox the app and its client live in and where its per-run test identity is minted; the trust is bound to it. |
 | `THORYN_WIF_CLIENT_ID` | The trust's `clientId` (`wi_…`). |
 
-Connection `sandbox` has these scopes:
+Connection `sandbox` has exactly these scopes (`APPLICATION_SCOPES` in `scripts/validate-templates.mjs`; `npm run check`
+fails any other set):
 
-- `tenant:applications.read`, `tenant:applications.write`;
-- `tenant:users.read`, `tenant:users.write`;
-- `tenant:environments.read`, which reads the sandbox's test inbox;
+- `tenant:applications.read`, `tenant:applications.write`, the application file's own ceiling;
 - `tenant:access.read`, the ownership check (`POST /api/v1/access/check`) `thoryn provision plan` makes for every
-  declared resource.
+  declared resource;
+- `tenant:environments.read`, which reads the sandbox's test inbox and resolves `--env <slug>`;
+- `tenant:test-identities.write`, which mints and revokes the run's test identity (oauthy ADR 2026-10-30).
 
-Those are the scopes `thoryn provision workflow check` (cli-v0.44.0 and later, rule `config.trust-scopes`) derives
-from the files the creation flow commits, so a generated repository's first plan does not stop on a `403`.
+**No `tenant:users.*`** (SSO-4087): an application defines no user of the tenant. Until then the connection
+held `tenant:users.read` / `.write` for a `kind: user` the application file declared; the mint replaced both.
+`thoryn provision workflow check` (rule `config.trust-scopes`) derives the first three from the application file
+and, since cli-v0.57.0, accepts the two sandbox tool scopes on an application file's trust, so a generated
+repository's first plan does not stop on a `403`. The application starters need cli-v0.57.0 or newer
+(`install-cli.sh` fails an older release before anything is provisioned).
 
 Its grant is `manager` on the sandbox. The client's display name is its converge key in the sandbox. In CI
 it is the repository's name; a local run uses `<repository>-local-<user>`, so a CI run's teardown never
@@ -265,7 +273,8 @@ fails when a starter's copy drifts.
 ## Security
 
 - No secrets anywhere: CI signs in with workload identity, the app is a public client using PKCE, the test
-  user's password is generated per run and masked, and the session secret is per process.
+  identity's password is generated by the platform, returned once, masked in the job log and revoked at the
+  end of the run (never written to a file, in CI or locally), and the session secret is per process.
 - Tokens never reach the browser and are never logged.
 - The API pins ES256, requires `typ` `at+jwt`, and checks `iss`, `aud`, expiry and `client_id`.
 - GitHub Actions are pinned by commit SHA.

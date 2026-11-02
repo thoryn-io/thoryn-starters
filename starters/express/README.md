@@ -28,15 +28,18 @@ thoryn login --issuer https://auth.stg.thoryn.org --workspace <your workspace>
 thoryn workspace switch <your workspace>
 thoryn env use <your sandbox>
 
-# Once: create your local client and a test user in that sandbox, and write .env.
+# Once: create your local client in that sandbox and write .env.
 .thoryn/ci/provision.sh
+
+# An account to sign in with: a disposable sandbox test identity, a day long, in your shell (nothing on disk).
+eval "$(thoryn env test-identity create --lifetime PT24H --output env)"
 
 # Every time:
 npm start
 ```
 
-Open <http://localhost:8080> or <http://127.0.0.1:8080>; both work. Sign in with the test user that
-`provision.sh` printed.
+Open <http://localhost:8080> or <http://127.0.0.1:8080>; both work. Sign in with the test identity you minted:
+`$THORYN_TEST_USER_EMAIL` and `$THORYN_TEST_USER_PASSWORD` in that shell.
 
 - `.thoryn/ci/provision.sh` reads the workspace, the platform and the sandbox from your session. An
   exported `THORYN_ISSUER`, `THORYN_WORKSPACE` or `THORYN_ENVIRONMENT` wins. Instead of `thoryn env use`,
@@ -44,14 +47,19 @@ Open <http://localhost:8080> or <http://127.0.0.1:8080>; both work. Sign in with
 - It converges a client of your own, `<repository>-local-<your user name>` (set `THORYN_APP_NAME` to choose
   another), so a CI run never deletes the client your local app uses. It then writes `OIDC_ISSUER` and
   `OIDC_CLIENT_ID` to `.env`.
-- **The test user.** The first local run generates one: `dev-<your user name>-<random>@example.com`, with a
-  random password that meets the sandbox password policy. It writes both to `.thoryn/local.env`, which is
-  owner-only (mode 0600) and gitignored, and prints the email, never the password. Later runs reuse the
-  file. An exported `THORYN_TEST_USER_EMAIL` / `THORYN_TEST_USER_PASSWORD` wins. The local e2e journey
-  (`cd e2e && npx playwright test`) reads the file too, and writes back the new password when its
-  password-reset step changes it.
-- `provision.sh` refuses production: an application's client and test user live in a sandbox only.
-- Your session needs the application and user scopes in that sandbox.
+- **The test account** is an ephemeral sandbox **test identity** (oauthy ADR 2026-10-30), never a user this
+  repository declares: `thoryn env test-identity create --lifetime PT24H --output env` mints one under your
+  own login — a synthetic `ti-…@sandbox.thoryn.invalid` address, email verified, a password the platform
+  generates and shows once — and the `eval` exports it as `THORYN_TEST_USER_EMAIL`,
+  `THORYN_TEST_USER_PASSWORD` and `THORYN_TEST_IDENTITY_ID`. It is never written to a file; it is erased after
+  24 hours, or now with `thoryn env test-identity revoke "$THORYN_TEST_IDENTITY_ID"`. Mint again when it has
+  expired. An exported `THORYN_TEST_USER_EMAIL` / `THORYN_TEST_USER_PASSWORD` (a sandbox user of your own) wins.
+- The local e2e journey (`cd e2e && npx playwright test`) reads the same two variables from your shell. Its
+  forgot-password step changes the identity's password, so mint again (`eval` the line once more) before you
+  run the journey a second time.
+- `provision.sh` refuses production: an application's client lives in a sandbox only, and a test identity can
+  only be minted in a sandbox (the API refuses production).
+- Your session needs the application scopes in that sandbox, and `tenant:test-identities.write` to mint.
 - `thoryn provision destroy --file .thoryn/provision.yaml` removes what your apply created.
 
 **Redirect URIs.** The sandbox client registers two sets of local callbacks, and only the sandbox client
@@ -88,7 +96,7 @@ above).
 | File | What it is |
 |---|---|
 | `template.json` | **What this repository needs from Thoryn:** the Actions variables (see [Configuration](#configuration)), and connection `sandbox`, the workload identity trust CI signs in with (its exact scopes and grant). No secret, no workspace name. |
-| `provision.yaml` | **What this app owns:** its OAuth client and its test user, in the sandbox named by `{{env.THORYN_ENVIRONMENT}}` (the CLI fills it in from the environment). Nothing workspace-wide. |
+| `provision.yaml` | **What this app owns** (`apiVersion: thoryn.io/application/v1`): its OAuth client, in the sandbox named by `{{env.THORYN_ENVIRONMENT}}` (the CLI fills it in from the environment). Nothing workspace-wide, and no user: the test account is minted per run, not declared. |
 | `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` after provisioning (sandbox), or — `--production` — for the production deploy from `THORYN_PRODUCTION_CLIENT_ID` (see [Production](#production)). |
 | `ci/` | The steps the pipeline runs (`gate.sh`, `login.sh` and `require-vars.sh` read and check the variables). |
 
@@ -99,9 +107,11 @@ above).
 1. **Build and unit tests** (`npm test`): the sign-in flow, the logout and the API's token checks, against an
    in-process fake issuer.
 2. **Provision the sandbox and run the sign-in journey:** sign in with workload identity (the job's GitHub
-   OIDC token is exchanged; nothing is stored), `thoryn provision apply` with a fresh test user, start the
-   app, run `e2e/` with Playwright (sign in, call the API, sign out, reset the password through the
-   sandbox's test inbox), then remove what the run created.
+   OIDC token is exchanged; nothing is stored), `thoryn provision apply`, mint one ephemeral test identity
+   for the run (`thoryn env test-identity create --output github-env`: the password is masked, then handed to
+   the next steps), start the app, run `e2e/` with Playwright (sign in, call the API, sign out, reset the
+   password through the sandbox's test inbox), then remove what the run created: revoke the identity and
+   destroy what the apply created (`.thoryn/ci/teardown.sh`, `if: always()`).
 
 `.github/workflows/deploy.yml` runs on every push to `main`: the production deploy skeleton (see
 [Production](#production)). It skips with a notice until the production client is published.
@@ -115,7 +125,7 @@ Variables). None is a secret. Thoryn's starter flow sets them when it creates th
 |---|---|
 | `THORYN_ISSUER` | The platform base issuer the `thoryn` CLI signs in to, e.g. `https://auth.stg.thoryn.org`. |
 | `THORYN_WORKSPACE` | The workspace slug. |
-| `THORYN_ENVIRONMENT` | The sandbox this app's client and test user live in. |
+| `THORYN_ENVIRONMENT` | The sandbox this app's client lives in and where its per-run test identity is minted. |
 | `THORYN_WIF_CLIENT_ID` | The clientId (`wi_…`) of the workload identity trust for this repository in that sandbox. |
 
 If one is missing, the run fails and names it. Two cases skip the Thoryn job with a notice instead:
