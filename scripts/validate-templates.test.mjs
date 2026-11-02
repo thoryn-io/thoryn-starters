@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APPLICATION_SCOPES, PLACEHOLDER_TOKEN, TENANT_SCOPES, checkStarter, compileSchemas, findPlaceholders } from "./validate-templates.mjs";
+import { APPLICATION_SCOPES, PLACEHOLDER_TOKEN, TENANT_SCOPES, checkRepositoryWorkflows, checkStarter, compileSchemas, findPlaceholders, jobsWithoutPlaintextTokenOptIn } from "./validate-templates.mjs";
 import { rmSync } from "node:fs";
 import YAML from "yaml";
 
@@ -191,6 +191,54 @@ test("the production deploy job holds no Thoryn identity: no id-token: write, no
   const dir2 = copy("aspnet-core");
   edit(dir2, ".github/workflows/deploy.yml", (t) => t.replace("        run: node .thoryn/app-env.mjs --production --github-env", "        run: |\n          .thoryn/ci/login.sh sandbox\n          node .thoryn/app-env.mjs --production --github-env"));
   assert.match(checkStarter(dir2, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and signs in to or provisions Thoryn/);
+});
+
+const OPT_IN = '      THORYN_CI_PLAINTEXT_TOKENS: "1"\n';
+
+test("SSO-4095: every application e2e job that runs the thoryn CLI opts in to plaintext CLI tokens", () => {
+  for (const s of ["express", "spring-boot", "aspnet-core"]) {
+    const dir = copy(s);
+    edit(dir, ".github/workflows/ci.yml", (t) => {
+      assert.ok(t.includes(OPT_IN), s);
+      return t.replace(OPT_IN, "");
+    });
+    // The control: the shape that failed thoryn-io/ti-first-app's first run (TokenStoreUnavailableException).
+    assert.match(checkStarter(dir, schemas).join("\n"), /ci\.yml: job e2e runs the thoryn CLI but does not set THORYN_CI_PLAINTEXT_TOKENS/, s);
+  }
+});
+
+test("SSO-4095: the opt-in counts at job or workflow level, not on one step; a job that never runs thoryn needs none", () => {
+  const job = (extra = {}) => ({ "runs-on": "ubuntu-latest", steps: [{ run: ".thoryn/ci/provision.sh" }], ...extra });
+  assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ jobs: { e2e: job() } }), ["e2e"]);
+  assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ jobs: { e2e: job({ env: { THORYN_CI_PLAINTEXT_TOKENS: "1" } }) } }), []);
+  assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ env: { THORYN_CI_PLAINTEXT_TOKENS: "1" }, jobs: { e2e: job() } }), []);
+  assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ jobs: { e2e: job({ env: { THORYN_CI_PLAINTEXT_TOKENS: "0" } }) } }), ["e2e"]);
+  assert.deepEqual(
+    jobsWithoutPlaintextTokenOptIn({ jobs: { e2e: { steps: [{ run: "thoryn provision plan --file x.yaml", env: { THORYN_CI_PLAINTEXT_TOKENS: "1" } }] } } }),
+    ["e2e"],
+  );
+  for (const run of ["../../shared/thoryn/ci/login.sh sandbox", ".thoryn/ci/teardown.sh", "echo hi && thoryn whoami"]) {
+    assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ jobs: { j: { steps: [{ run }] } } }), ["j"], run);
+  }
+  for (const run of ["node .thoryn/app-env.mjs --production --github-env", ".thoryn/ci/install-cli.sh", ".thoryn/ci/start-app.sh"]) {
+    assert.deepEqual(jobsWithoutPlaintextTokenOptIn({ jobs: { j: { steps: [{ run }] } } }), [], run);
+  }
+});
+
+test("SSO-4095: this repository's own workflows that sign in opt in too; removing it fails", () => {
+  assert.deepEqual(checkRepositoryWorkflows(root), []);
+  const repo = mkdtempSync(join(tmpdir(), "validate-repo-"));
+  cpSync(join(root, ".github/workflows"), join(repo, ".github/workflows"), { recursive: true });
+  for (const wf of ["ci.yml", "stack-e2e.yml"]) {
+    edit(repo, `.github/workflows/${wf}`, (t) => {
+      assert.ok(t.includes(OPT_IN), wf);
+      return t.replace(OPT_IN, "");
+    });
+  }
+  const problems = checkRepositoryWorkflows(repo);
+  assert.equal(problems.length, 2, problems.join("\n"));
+  assert.match(problems[0], /^\.github\/workflows\/ci\.yml: job config-plan runs the thoryn CLI but does not set THORYN_CI_PLAINTEXT_TOKENS/);
+  assert.match(problems[1], /^\.github\/workflows\/stack-e2e\.yml: job e2e runs the thoryn CLI but does not set THORYN_CI_PLAINTEXT_TOKENS/);
 });
 
 test("the published production client id is read without being declared: the creation flow does not set it", () => {

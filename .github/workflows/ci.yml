@@ -138,6 +138,8 @@ jobs:
       # The shared scripts read the connection (its client id variable, sandbox variable and scopes) from this declaration.
       THORYN_TEMPLATE_FILE: .thoryn/template.json
       GH_TOKEN: ${{ github.token }}
+      # No OS keychain on a GitHub-hosted runner, which is discarded after the job: the CLI's documented CI opt-in to a token file.
+      THORYN_CI_PLAINTEXT_TOKENS: "1"
       FORK: ${{ github.event.pull_request.head.repo.fork == true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
