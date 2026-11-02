@@ -3,7 +3,11 @@
 //
 // Two modes. SANDBOX (the default; CI's e2e and every local run):
 //   OIDC_ISSUER        the issuer of the sandbox environment THORYN_ENVIRONMENT of workspace THORYN_WORKSPACE
-//   OIDC_CLIENT_ID     the clientId of the application `thoryn provision apply` converged (from its receipt)
+//   OIDC_CLIENT_ID     the clientId of the application `thoryn provision apply` converged: read from that apply's
+//                      `--output json` result, which .thoryn/ci/provision.sh saves OUTSIDE the committed tree
+//                      ($RUNNER_TEMP/thoryn-apply.json in CI, the gitignored .thoryn/last-apply.json locally; the
+//                      path is THORYN_APPLY_RESULT). The CLI keeps no receipt (thoryn-cli SSO-3715, ADR 2026-10-15
+//                      platform-is-the-ledger): the apply result is this run's only record of the id.
 //   THORYN_WORKSPACE   the workspace slug (for the e2e's test-inbox reads)
 //   THORYN_ENVIRONMENT the environment slug (idem)
 // PRODUCTION (`--production`, or implied when THORYN_PRODUCTION_CLIENT_ID is set and THORYN_ENVIRONMENT is
@@ -12,7 +16,7 @@
 //   OIDC_CLIENT_ID     THORYN_PRODUCTION_CLIENT_ID, the production client the workspace's CONFIG project
 //                      declared and published into this repository's GitHub environment `production`
 //                      (https://thoryn.org/docs/guides/production-client-from-the-config-project). This
-//                      repository never converges production, so there is no production receipt to read.
+//                      repository never converges production, so there is no production apply result to read.
 //   THORYN_WORKSPACE   the workspace slug
 //
 // Inputs, from the environment (GitHub Actions variables in CI; exported locally) or the flags below:
@@ -39,7 +43,7 @@
 //   node .thoryn/app-env.mjs --wiring        # print THORYN_ISSUER / THORYN_WORKSPACE / THORYN_ENVIRONMENT only
 //                                            # (what .thoryn/ci/provision.sh uses for a local run)
 //   node .thoryn/app-env.mjs --production    # production mode (see above); combine with --github-env / --write
-//   options: --issuer <url> --workspace <slug> --environment <slug> --receipt <path> --application <name>
+//   options: --issuer <url> --workspace <slug> --environment <slug> --apply-result <path> --application <name>
 //            --production | --mode <sandbox|production>
 
 import { spawnSync } from "node:child_process";
@@ -65,13 +69,23 @@ export function composeIssuer(platformIssuer, workspace, environment) {
   return `${base.protocol}//${workspace}.${base.host}${environment ? `/${environment}` : ""}`;
 }
 
-/** Read the clientId of application [name] from a provisioning receipt object. */
-export function clientIdFromReceipt(receipt, name) {
-  const apps = (receipt?.resources ?? []).filter((r) => r.kind === "application");
+/**
+ * The declared resources of a `thoryn provision apply --output json` document (thoryn-cli SSO-3715): `resources[]` of
+ * `{kind, name, id, environment, action}`. With `--wait` the CLI wraps it as `{ "apply": <result>, "customDomain": … }`;
+ * an apply with no changes prints the plan, which carries the same `resources[]`.
+ */
+export function applyResultResources(result) {
+  const doc = result && typeof result === "object" && result.apply && typeof result.apply === "object" ? result.apply : result;
+  return Array.isArray(doc?.resources) ? doc.resources : [];
+}
+
+/** Read the clientId of application [name] from a `thoryn provision apply --output json` result. */
+export function clientIdFromApplyResult(result, name) {
+  const apps = applyResultResources(result).filter((r) => r?.kind === "application");
   const app = name ? apps.find((r) => r.name === name) : apps[0];
-  if (!app?.id) {
+  if (typeof app?.id !== "string" || !app.id) {
     throw new AppEnvError(
-      `the provisioning receipt has no application${name ? ` named "${name}"` : ""} — run \`thoryn provision apply --file .thoryn/provision.yaml\` first`,
+      `the apply result has no application${name ? ` named "${name}"` : ""} — run .thoryn/ci/provision.sh, which saves \`thoryn provision apply --file .thoryn/provision.yaml --output json\``,
     );
   }
   return app.id;
@@ -105,16 +119,18 @@ function requireWorkspace(platformIssuer, workspace) {
   if (!SLUG.test(workspace)) throw new AppEnvError(`THORYN_WORKSPACE ${JSON.stringify(workspace)} is not a workspace slug`);
 }
 
-/** Sandbox mode: the environment's issuer, and the client id `thoryn provision apply` converged (its receipt). */
-export async function resolveAppEnv({ workspace, environment, receipt, platformIssuer, application, fetchImpl = fetch }) {
+/** Sandbox mode: the environment's issuer, and the client id `thoryn provision apply` converged (its `--output json` result). */
+export async function resolveAppEnv({ workspace, environment, applyResult, platformIssuer, application, fetchImpl = fetch }) {
   requireWorkspace(platformIssuer, workspace);
   if (!environment) throw new AppEnvError("set THORYN_ENVIRONMENT to the sandbox slug (a GitHub Actions variable in CI; locally, export it or pass --environment <sandbox>)");
   if (!SLUG.test(environment)) throw new AppEnvError(`THORYN_ENVIRONMENT ${JSON.stringify(environment)} is not an environment slug`);
+  // The local input first: a missing client id is named before any network call.
+  const clientId = clientIdFromApplyResult(applyResult, application);
   const composed = composeIssuer(platformIssuer, workspace, environment);
   const issuer = await discoverIssuer(composed, fetchImpl);
   return {
     OIDC_ISSUER: issuer,
-    OIDC_CLIENT_ID: clientIdFromReceipt(receipt, application),
+    OIDC_CLIENT_ID: clientId,
     THORYN_WORKSPACE: workspace,
     THORYN_ENVIRONMENT: environment,
   };
@@ -127,7 +143,7 @@ const GUIDE = "https://thoryn.org/docs/guides/production-client-from-the-config-
  * Production mode: the WORKSPACE issuer (`https://<workspace>.<platform host>`, no environment path — production
  * is the workspace's own plane), resolved through its discovery document like the sandbox's; and the client id
  * from THORYN_PRODUCTION_CLIENT_ID, which the workspace's config project published into this repository's
- * GitHub environment `production` when its production run converged the client. No receipt is read: an
+ * GitHub environment `production` when its production run converged the client. No apply result is read: an
  * application repository never converges production and has no production identity.
  */
 export async function resolveProductionAppEnv({ workspace, platformIssuer, clientId, fetchImpl = fetch }) {
@@ -220,7 +236,8 @@ async function main(argv) {
     issuer: process.env.THORYN_ISSUER ?? process.env.THORYN_HUB,
     workspace: process.env.THORYN_WORKSPACE,
     environment: process.env.THORYN_ENVIRONMENT,
-    receipt: join(here, "provision.receipt.json"),
+    // provision.sh exports THORYN_APPLY_RESULT; without it, the local default next to this script (.thoryn/last-apply.json).
+    applyResult: process.env.THORYN_APPLY_RESULT || join(here, "last-apply.json"),
     application: "web",
     productionClientId: process.env[PRODUCTION_CLIENT_ID_VARIABLE],
     mode: undefined,
@@ -235,7 +252,7 @@ async function main(argv) {
     else if (a === "--issuer") opt.issuer = argv[++i];
     else if (a === "--workspace") opt.workspace = argv[++i];
     else if (a === "--environment") opt.environment = argv[++i];
-    else if (a === "--receipt") opt.receipt = argv[++i];
+    else if (a === "--apply-result") opt.applyResult = argv[++i];
     else if (a === "--application") opt.application = argv[++i];
     else if (a === "--production") opt.mode = "production";
     else if (a === "--mode") opt.mode = argv[++i];
@@ -258,11 +275,22 @@ async function main(argv) {
   if (mode === "production") {
     vars = await resolveProductionAppEnv({ workspace: opt.workspace, platformIssuer: opt.issuer, clientId: opt.productionClientId });
   } else {
-    if (!existsSync(opt.receipt)) throw new AppEnvError(`${opt.receipt} not found — run \`thoryn provision apply --file .thoryn/provision.yaml\` first`);
+    if (!opt.applyResult || !existsSync(opt.applyResult)) {
+      throw new AppEnvError(
+        `no apply result at ${opt.applyResult || "(empty --apply-result)"} — run .thoryn/ci/provision.sh first: it saves \`thoryn provision apply --output json\` there ` +
+          "(the CLI keeps no local receipt; set THORYN_APPLY_RESULT or --apply-result to read another file)",
+      );
+    }
+    let applyResult;
+    try {
+      applyResult = JSON.parse(readFileSync(opt.applyResult, "utf8"));
+    } catch (e) {
+      throw new AppEnvError(`${opt.applyResult} is not a \`thoryn provision apply --output json\` result (${e?.message ?? e})`);
+    }
     vars = await resolveAppEnv({
       workspace: opt.workspace,
       environment: opt.environment,
-      receipt: JSON.parse(readFileSync(opt.receipt, "utf8")),
+      applyResult,
       platformIssuer: opt.issuer,
       application: opt.application,
     });

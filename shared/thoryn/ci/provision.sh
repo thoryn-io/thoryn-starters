@@ -15,6 +15,12 @@
 # THORYN_TEST_USER_PASSWORD to $GITHUB_ENV for the next steps; teardown.sh revokes it. It is never declared in
 # provision.yaml (an application defines no user of the tenant) and never written to a file.
 #
+# The apply's `--output json` result (every declared resource with its live id and what THIS apply did to it:
+# create / update / noop) is the run's only record of the client id: the CLI keeps no receipt (thoryn-cli SSO-3715,
+# the platform is the ledger). It is saved OUTSIDE the committed tree, at THORYN_APPLY_RESULT: $RUNNER_TEMP/thoryn-apply.json
+# in Actions (exported to the next steps), the gitignored .thoryn/last-apply.json locally. app-env.mjs reads the client
+# id from it; teardown.sh destroys only what it shows this run created.
+#
 # Locally, sign in yourself first (`thoryn login --issuer <platform> --workspace <workspace>`). Whatever is
 # not exported comes from that session: the workspace and platform you signed in to, and the sandbox
 # `thoryn env use` selected. The app's settings go to .env. The test identity is minted into YOUR SHELL, by you
@@ -57,13 +63,36 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   echo "THORYN_APP_NAME=$THORYN_APP_NAME" >> "$GITHUB_ENV"
 fi
 
+if [ -z "${THORYN_APPLY_RESULT:-}" ]; then
+  if $in_actions && [ -n "${RUNNER_TEMP:-}" ]; then
+    THORYN_APPLY_RESULT="$RUNNER_TEMP/thoryn-apply.json"
+  else
+    THORYN_APPLY_RESULT=".thoryn/last-apply.json"
+  fi
+fi
+export THORYN_APPLY_RESULT
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "THORYN_APPLY_RESULT=$THORYN_APPLY_RESULT" >> "$GITHUB_ENV"
+fi
+# An earlier run's result must never stand in for this one's: teardown.sh would read its `create` as this run's.
+rm -f "$THORYN_APPLY_RESULT"
+
 if $in_actions; then
   "$here/login.sh" sandbox
 else
   echo "Local run: workspace $THORYN_WORKSPACE, sandbox $THORYN_ENVIRONMENT, client '$THORYN_APP_NAME', as your own thoryn session."
 fi
 thoryn provision plan --file .thoryn/provision.yaml
-thoryn provision apply --file .thoryn/provision.yaml --yes
+# The plan above is the human-readable view; the apply prints its progress to stderr and its result (JSON) to stdout.
+# Written to a temporary name and moved into place only when the apply succeeded, so a result file means a finished apply.
+thoryn provision apply --file .thoryn/provision.yaml --yes --output json > "$THORYN_APPLY_RESULT.partial"
+mv "$THORYN_APPLY_RESULT.partial" "$THORYN_APPLY_RESULT"
+# shellcheck disable=SC2016 # a JavaScript program: $ and ` are JavaScript's, not the shell's
+node -e '
+  const doc = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const resources = (doc && doc.apply && typeof doc.apply === "object" ? doc.apply : doc)?.resources ?? [];
+  for (const r of resources) console.log(`Applied ${r.kind} ${r.name}: ${r.id} (${r.action})`);
+' "$THORYN_APPLY_RESULT"
 
 # The test identity (see the header). In Actions: one per run, minted after the apply (no account for a run
 # that has no client), labelled with the client's name and the run, so `thoryn env test-identity list` and the
@@ -84,7 +113,7 @@ MSG
 fi
 
 if [ -n "${GITHUB_ENV:-}" ]; then
-  node .thoryn/app-env.mjs --github-env
+  node .thoryn/app-env.mjs --apply-result "$THORYN_APPLY_RESULT" --github-env
 else
-  node .thoryn/app-env.mjs --write .env
+  node .thoryn/app-env.mjs --apply-result "$THORYN_APPLY_RESULT" --write .env
 fi

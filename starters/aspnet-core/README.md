@@ -85,7 +85,7 @@ The app reads everything from the environment (it also loads the nearest `.env`)
 | Variable | Meaning |
 |---|---|
 | `OIDC_ISSUER` | The sandbox's issuer. Resolved at run time by `.thoryn/app-env.mjs`, never committed, so a custom domain needs no change here. |
-| `OIDC_CLIENT_ID` | This app's client id, read from the provisioning receipt. |
+| `OIDC_CLIENT_ID` | This app's client id, read from the `thoryn provision apply --output json` result `provision.sh` saves outside the repository (`$RUNNER_TEMP` in CI, the gitignored `.thoryn/last-apply.json` locally). The CLI keeps no receipt. |
 | `OIDC_AUDIENCE` | Audience the API requires. Default: the issuer (Thoryn lists its issuer in every access token's `aud`). |
 | `PORT`, `APP_BASE_URL` | Where the app listens. Default `8080` and `http://127.0.0.1:8080`. |
 | `COOKIE_SECURE` | Override the cookie `Secure` flag (default: on when `APP_BASE_URL` is https). |
@@ -113,7 +113,8 @@ above).
    for the run (`thoryn env test-identity create --output github-env`: the password is masked, then handed to
    the next steps), start the app, run `e2e/` with Playwright (sign in, call the API, sign out, reset the
    password through the sandbox's test inbox), then remove what the run created: revoke the identity and
-   destroy what the apply created (`.thoryn/ci/teardown.sh`, `if: always()`).
+   destroy the client only when this run's apply created it (`.thoryn/ci/teardown.sh`, `if: always()`). A
+   client that already existed, which the apply only converged, stays.
 
 `.github/workflows/deploy.yml` runs on every push to `main`: the production deploy skeleton (see
 [Production](#production)). It skips with a notice until the production client is published.

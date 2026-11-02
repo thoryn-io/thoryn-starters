@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AppEnvError, clientIdFromReceipt, composeIssuer, resolveAppEnv, resolveWiring, toDotenv, wiringFromWhoami } from "./app-env.mjs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { AppEnvError, applyResultResources, clientIdFromApplyResult, composeIssuer, resolveAppEnv, resolveWiring, toDotenv, wiringFromWhoami } from "./app-env.mjs";
 
 test("composeIssuer puts the workspace in front of the platform host and the sandbox in the path", () => {
   assert.equal(composeIssuer("https://auth.stg.thoryn.org", "acme", "dev"), "https://acme.auth.stg.thoryn.org/dev");
@@ -13,15 +18,36 @@ test("composeIssuer refuses a plain-http platform that is not loopback", () => {
   assert.throws(() => composeIssuer("not a url", "acme", "dev"), AppEnvError);
 });
 
-test("clientIdFromReceipt reads the named application and explains a missing one", () => {
-  const receipt = { resources: [{ kind: "user", name: "test-user", id: "u1" }, { kind: "application", name: "web", id: "app-123" }] };
-  assert.equal(clientIdFromReceipt(receipt, "web"), "app-123");
-  assert.throws(() => clientIdFromReceipt(receipt, "api"), /provision apply/);
-  assert.throws(() => clientIdFromReceipt({}, "web"), AppEnvError);
+// SSO-4097 — the CLI keeps no receipt (thoryn-cli SSO-3715): `thoryn provision apply --output json` prints ONE document, and
+// these are its real shapes at cli-v0.58.0 (ProvisionEngine ApplyResult / ProvisionPlan.toStructured, ProvisionCommand awaitDomain).
+/** An apply that created the client: `ApplyResult.toStructured()`. */
+const APPLY_CREATED = {
+  workspace: "acme",
+  resources: [{ kind: "application", name: "web", id: "app-123", environment: "dev", action: "create", attributes: { displayName: "shop" }, owner: "client:wi_0123" }],
+  summary: { create: 1, update: 0, noop: 0 },
+};
+/** An apply with nothing to change prints the PLAN: `ProvisionPlan.toStructured()`, whose `resources[]` carries the same ids. */
+const APPLY_NO_CHANGES = {
+  changes: [{ kind: "application", name: "web", action: "noop", reason: "exists and matches", id: "app-123", environment: "dev", owner: "client:wi_0123" }],
+  resources: [{ kind: "application", name: "web", id: "app-123", environment: "dev", action: "noop", owner: "client:wi_0123" }],
+  summary: { create: 0, update: 0, remove: 0, noop: 1, skip: 0, grants: 0, error: 0, publish: 0, deliver: 0, pull: 0, customerManaged: 0 },
+  warnings: [],
+};
+
+test("clientIdFromApplyResult reads the named application from every shape apply --output json prints, and explains a missing one", () => {
+  assert.equal(clientIdFromApplyResult(APPLY_CREATED, "web"), "app-123");
+  assert.equal(clientIdFromApplyResult(APPLY_NO_CHANGES, "web"), "app-123");
+  // `--wait`: `{ "apply": <result>, "customDomain": <status> }`.
+  assert.equal(clientIdFromApplyResult({ apply: APPLY_CREATED, customDomain: { state: "ACTIVE" } }, "web"), "app-123");
+  assert.deepEqual(applyResultResources({ apply: APPLY_NO_CHANGES }).map((r) => r.action), ["noop"]);
+  assert.throws(() => clientIdFromApplyResult(APPLY_CREATED, "api"), /apply result has no application named "api" — run \.thoryn\/ci\/provision\.sh/);
+  assert.throws(() => clientIdFromApplyResult({}, "web"), AppEnvError);
+  // A plan with the application still to create resolves no id: there is none to read.
+  assert.throws(() => clientIdFromApplyResult({ changes: [{ kind: "application", name: "web", action: "create" }], resources: [] }, "web"), AppEnvError);
 });
 
 const where = { workspace: "acme", environment: "dev" };
-const receipt = { resources: [{ kind: "application", name: "web", id: "app-123" }] };
+const applyResult = APPLY_CREATED;
 
 test("resolveAppEnv uses the issuer the discovery document publishes (a custom domain wins)", async () => {
   const seen = [];
@@ -29,7 +55,7 @@ test("resolveAppEnv uses the issuer the discovery document publishes (a custom d
     seen.push(url);
     return new Response(JSON.stringify({ issuer: "https://login.acme.com/dev" }), { status: 200 });
   };
-  const vars = await resolveAppEnv({ ...where, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl });
+  const vars = await resolveAppEnv({ ...where, applyResult, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl });
   assert.deepEqual(seen, ["https://acme.auth.stg.thoryn.org/dev/.well-known/openid-configuration"]);
   assert.deepEqual(vars, {
     OIDC_ISSUER: "https://login.acme.com/dev",
@@ -41,16 +67,16 @@ test("resolveAppEnv uses the issuer the discovery document publishes (a custom d
 });
 
 test("resolveAppEnv fails clearly without THORYN_ISSUER or when discovery is not served", async () => {
-  await assert.rejects(resolveAppEnv({ ...where, receipt, platformIssuer: undefined, application: "web" }), /THORYN_ISSUER/);
+  await assert.rejects(resolveAppEnv({ ...where, applyResult, platformIssuer: undefined, application: "web" }), /THORYN_ISSUER/);
   const notFound = async () => new Response("", { status: 404 });
   await assert.rejects(
-    resolveAppEnv({ ...where, receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: notFound }),
+    resolveAppEnv({ ...where, applyResult, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: notFound }),
     /HTTP 404/,
   );
 });
 
 test("resolveAppEnv names THORYN_WORKSPACE / THORYN_ENVIRONMENT when they are missing or not slugs", async () => {
-  const base = { receipt, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: async () => assert.fail("no fetch expected") };
+  const base = { applyResult, platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: async () => assert.fail("no fetch expected") };
   await assert.rejects(resolveAppEnv({ ...base, environment: "dev" }), /set THORYN_WORKSPACE/);
   await assert.rejects(resolveAppEnv({ ...base, workspace: "acme" }), /set THORYN_ENVIRONMENT/);
   await assert.rejects(resolveAppEnv({ ...base, workspace: "Acme/x", environment: "dev" }), /THORYN_WORKSPACE .* is not a workspace slug/);
@@ -108,9 +134,9 @@ test("resolveProductionAppEnv composes the WORKSPACE issuer with no environment 
   assert.equal(toDotenv(vars), "OIDC_ISSUER=https://login.acme.com\nOIDC_CLIENT_ID=app-prod-9\nTHORYN_WORKSPACE=acme\n");
 });
 
-test("resolveProductionAppEnv never reads a receipt: a receipt naming another client changes nothing", async () => {
+test("resolveProductionAppEnv never reads an apply result: one naming another client changes nothing", async () => {
   const fetchImpl = async () => new Response(JSON.stringify({ issuer: "https://acme.auth.stg.thoryn.org" }), { status: 200 });
-  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", receipt, fetchImpl });
+  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", applyResult, fetchImpl });
   assert.equal(vars.OIDC_CLIENT_ID, "app-prod-9");
 });
 
@@ -145,4 +171,25 @@ test("selectMode: asked for wins; otherwise production only when the production 
   assert.equal(selectMode({ productionClientId: "app-1", environment: "dev" }), "sandbox");
   assert.equal(selectMode({}), "sandbox");
   assert.throws(() => selectMode({ mode: "staging" }), /--mode must be one of sandbox, production/);
+});
+
+// SSO-4097 — the command line: the apply result is named by --apply-result (or THORYN_APPLY_RESULT), and a missing one is explained.
+const script = join(dirname(fileURLToPath(import.meta.url)), "app-env.mjs");
+function appEnv(args, env = {}) {
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("THORYN_") && !k.startsWith("GITHUB_")));
+  return spawnSync(process.execPath, [script, ...args], { env: { ...clean, GITHUB_ACTIONS: "true", ...env }, encoding: "utf8" });
+}
+
+test("app-env.mjs names the missing apply result and how to make it; the retired --receipt is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "app-env-"));
+  const wiring = { THORYN_ISSUER: "https://auth.stg.thoryn.org", THORYN_WORKSPACE: "acme", THORYN_ENVIRONMENT: "dev" };
+  const missing = appEnv(["--apply-result", join(dir, "thoryn-apply.json")], wiring);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /no apply result at .*thoryn-apply\.json — run \.thoryn\/ci\/provision\.sh first: it saves `thoryn provision apply --output json` there/);
+  // THORYN_APPLY_RESULT is the default the CI steps share.
+  const viaEnv = appEnv([], { ...wiring, THORYN_APPLY_RESULT: join(dir, "from-env.json") });
+  assert.match(viaEnv.stderr, /no apply result at .*from-env\.json/);
+  writeFileSync(join(dir, "bad.json"), "Applied. 1 resource(s) converged");
+  assert.match(appEnv(["--apply-result", join(dir, "bad.json")], wiring).stderr, /is not a `thoryn provision apply --output json` result/);
+  assert.match(appEnv(["--receipt", join(dir, "x.json")], wiring).stderr, /unknown argument --receipt/);
 });
