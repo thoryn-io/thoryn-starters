@@ -71,7 +71,7 @@ jobs:
         # or a repository variable missing: fail, naming each.
         run: |
           if [ "$IS_TEMPLATE" != "true" ] && [ -z "$THORYN_PRODUCTION_WIF_CLIENT_ID" ] && [ -z "$THORYN_PRODUCTION_URL" ]; then
-            echo "::notice::THORYN_PRODUCTION_WIF_CLIENT_ID and THORYN_PRODUCTION_URL are not set on the GitHub environment 'production': the workspace's config project declares this repository's production trust, and you set the deployed URL (see the README's Production section). Nothing is provisioned or deployed yet."
+            echo "::notice::THORYN_PRODUCTION_WIF_CLIENT_ID and THORYN_PRODUCTION_URL are not set on the GitHub environment 'production': the setup creates this repository's production trust and sets its clientId when the workspace has a config project, which declares and owns the trust; you set the deployed URL (see the README's Production section). Nothing is provisioned or deployed yet."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             .thoryn/ci/gate.sh THORYN_ISSUER THORYN_WORKSPACE THORYN_PRODUCTION_WIF_CLIENT_ID THORYN_PRODUCTION_URL

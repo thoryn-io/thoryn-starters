@@ -148,12 +148,14 @@ both in the GitHub environment `production`:
 
 | Variable | Meaning |
 |---|---|
-| `THORYN_PRODUCTION_WIF_CLIENT_ID` | The production trust's `clientId`. The workspace's **config** project declares that trust, pinned to this repository and its `production` environment (ADR 2026-10-25 decision 3, SSO-4079). An application project never declares its own trust. |
+| `THORYN_PRODUCTION_WIF_CLIENT_ID` | The production trust's `clientId`, set by the setup. The trust is pinned to this repository and its `production` environment; the workspace's **config** project declares and owns it (ADR 2026-10-25 decision 3, ADR 2026-11-03, SSO-4079). An application project never declares its own trust. |
 | `THORYN_PRODUCTION_URL` | The deployed app's https base URL. The production client's redirect URIs are `<url>/callback` and `<url>/signed-out`. |
 
-They are not in `template.json` because that file lists what the creation flow sets up. The orchestrator refuses an
-application template with a production connection or any variable beyond the four above, and the production trust
-is not the creation flow's to create. Until both variables are set the job skips with a notice.
+They are not in `template.json` because every released `thoryn` CLI, and the orchestrator, refuse an application
+template with a production connection or any variable beyond the four above. When the workspace has a config project,
+the setup reads `declaration.json`, creates the production trust and sets `THORYN_PRODUCTION_WIF_CLIENT_ID` (see
+[What the creation flow sets up](#what-the-creation-flow-sets-up)); `THORYN_PRODUCTION_URL` is yours to set. Until both
+variables are set the job skips with a notice.
 
 The production client has a **fixed** id, `<repository>-production` (`{{env.THORYN_APP_NAME}}-production`), because
 a creation slot binds a name (oauthy ADR 2026-10-17). The trust holds the application ceiling only
