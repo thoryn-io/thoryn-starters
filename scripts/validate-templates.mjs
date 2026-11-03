@@ -31,8 +31,9 @@
 //    every tenant kind (TENANT_SCOPE_AREAS), so the import can read, and a plan profile read, the whole tenant;
 //  - an APPLICATION project's production deploy job (SSO-3666) reads vars.THORYN_PRODUCTION_CLIENT_ID in the
 //    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
-//    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
-//    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project);
+//    Thoryn identity: no `id-token: write`, no sign-in, no provisioning. The variable is set by hand today; oauthy ADR
+//    2026-10-25 retired the config project's `publishTo`, and SSO-4120 replaces this rule with the app's own reviewed
+//    production apply job (creation slot);
 //  - SSO-4095: every workflow job that runs the thoryn CLI — a starter's and this repository's own — sets
 //    THORYN_CI_PLAINTEXT_TOKENS: "1" at job or workflow level. A GitHub-hosted runner has no OS keychain, so without the
 //    CLI's CI opt-in `thoryn login --workload-identity` fails (TokenStoreUnavailableException) before anything runs;
@@ -81,17 +82,16 @@ export const VARIABLE_CONTRACT = {
  * the CLI, never declared in a provisioning file.
  */
 const RUNTIME_ENV = new Set(["THORYN_APP_NAME"]);
-/** The variable the production deploy job reads (set by the config project, never by the creation flow). */
+/** The variable the production deploy job reads (set by hand until SSO-4120, never by the creation flow). */
 export const PRODUCTION_CLIENT_ID_VARIABLE = "THORYN_PRODUCTION_CLIENT_ID";
 /** The GitHub environment the production deploy job runs in and that variable lives in. */
 export const PRODUCTION_GITHUB_ENVIRONMENT = "production";
 /**
  * Variables a workflow may read without declaring them: the creation flow does not set them, so they are not
- * part of the contract template.json declares. THORYN_PRODUCTION_CLIENT_ID is published into the application
- * repository's GitHub environment `production` by the workspace's CONFIG project when its production run
- * converges the app's production client (SSO-3666; oauthy ADR 2026-10-13). The manifest schema has no way to
- * declare a variable another project publishes — a known gap, reported under SSO-3666 — so it is read, not
- * declared.
+ * part of the contract template.json declares. THORYN_PRODUCTION_CLIENT_ID lives in the application
+ * repository's GitHub environment `production` and is set by a person (SSO-3666). The config project's `publishTo`
+ * that was meant to set it is retired (oauthy ADR 2026-10-25); SSO-4120 has deploy.yml read the id from the app's
+ * own production apply instead. Until then it is read, not declared.
  */
 const OPTIONAL_VARS = new Set(["THORYN_CLI_VERSION", PRODUCTION_CLIENT_ID_VARIABLE]);
 /** SSO-3971 — the part a config project's sections declare (thoryn-cli SSO-3962, oauthy ADR 2026-10-25). */
