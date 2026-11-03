@@ -1,21 +1,20 @@
 # Deploy the app to production — a skeleton for you to complete.
 #
-# This repository is an APPLICATION project: it has no production identity on Thoryn and never converges
-# production. Its production OAuth client is declared in the workspace's CONFIG repository (a reviewed pull
-# request there, then an approved production run), and that project's apply PUBLISHES the client's id into this
-# repository as the Actions variable THORYN_PRODUCTION_CLIENT_ID of the GitHub environment `production`. The job
-# below reads it there, resolves the production issuer from the platform's discovery document
-# (`.thoryn/app-env.mjs --production`) and hands OIDC_ISSUER / OIDC_CLIENT_ID to your deploy step. It signs in to
+# This repository is an APPLICATION project. Today it has no production identity on Thoryn, and no template
+# creates its production OAuth client: the config project no longer publishes one (`publishTo` is retired, oauthy
+# ADR 2026-10-25). Until this repository's own production apply job ships (SSO-4120), a workspace admin registers
+# the client by hand and sets its id as the Actions variable THORYN_PRODUCTION_CLIENT_ID of the GitHub
+# environment `production`. The job below reads it there, resolves the production issuer from the platform's
+# discovery document (`.thoryn/app-env.mjs --production`) and hands OIDC_ISSUER / OIDC_CLIENT_ID to your deploy step. It signs in to
 # nothing and calls Thoryn for nothing, so it requests no id-token.
 #
 # Variables it reads (none is a secret):
 #   THORYN_ISSUER                 repository variable — the platform base issuer, e.g. https://auth.stg.thoryn.org
 #   THORYN_WORKSPACE              repository variable — the workspace
 #   THORYN_PRODUCTION_CLIENT_ID   variable of the GitHub environment `production` — the app's production client,
-#                                 published by the config project (by hand until then: `gh variable set
-#                                 THORYN_PRODUCTION_CLIENT_ID --env production --body <id>`)
-# Until the client is published the job skips with a notice, so a new repository stays green.
-# Guide: https://thoryn.org/docs/guides/production-client-from-the-config-project
+#                                 set by hand: `gh variable set THORYN_PRODUCTION_CLIENT_ID --env production
+#                                 --body <id>`
+# Until the variable is set the job skips with a notice, so a new repository stays green.
 name: Deploy
 
 on:
@@ -49,10 +48,10 @@ jobs:
         with:
           node-version: 24
       - id: gate
-        name: Production client published?
+        name: Production client id set?
         run: |
           if [ -z "$THORYN_PRODUCTION_CLIENT_ID" ]; then
-            echo "::notice::THORYN_PRODUCTION_CLIENT_ID is not set on the GitHub environment 'production': the workspace's config project has not published this app's production client yet, so nothing is deployed. See https://thoryn.org/docs/guides/production-client-from-the-config-project"
+            echo "::notice::THORYN_PRODUCTION_CLIENT_ID is not set on the GitHub environment 'production': register the app's production client and set its id there (see the README's Production section), so nothing is deployed yet."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"

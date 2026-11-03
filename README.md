@@ -19,7 +19,7 @@ A workspace is configured by **one config project** and used by **many applicati
 | Contains | Configuration only, no app code | An app (Spring Boot, ASP.NET Core, Express) |
 | Provisioning declares | **Tenant provisioning** (`apiVersion: thoryn.io/tenant/v1`, one file per section under `.thoryn/environments/<section>/`): environments, federation members / IdPs, users (sandbox test users included), login methods, login flows, branding, email provider, custom domain, roles. Production and every sandbox are sections. | **Application provisioning** (`apiVersion: thoryn.io/application/v1`, `.thoryn/provision.yaml`): its own OAuth application client(s). No environment, no user, no workspace configuration. The account its e2e signs in with is not declared: CI **mints** an ephemeral sandbox test identity per run (`thoryn env test-identity create`, oauthy ADR 2026-10-30) and revokes it afterwards. |
 | Sign-in (`connections` in `.thoryn/template.json`) | One per environment section. Each signs in with that environment's workload identity trust; production's trust pins a GitHub environment. | One: the sandbox the app runs against. |
-| CI | The provisioning **stub** the creation flow seeds (`.github/workflows/thoryn-provisioning.yml`, calling thoryn-cli's reusable workflow at a `cli-v*` release), dispatched by the Thoryn GitHub App: `thoryn provision plan` on pull requests (read-only plan profile), `apply` on `main` behind the reviewed production environment. The template itself ships no workflow (SSO-3971). | Build, unit tests, `thoryn provision apply` to the sandbox, one minted test identity, a Playwright sign-in journey, teardown (revoke the identity, destroy what the run created). Plus a production deploy skeleton (`deploy.yml`) that reads the client id the config project published. |
+| CI | The provisioning **stub** the creation flow seeds (`.github/workflows/thoryn-provisioning.yml`, calling thoryn-cli's reusable workflow at a `cli-v*` release), dispatched by the Thoryn GitHub App: `thoryn provision plan` on pull requests (read-only plan profile), `apply` on `main` behind the reviewed production environment. The template itself ships no workflow (SSO-3971). | Build, unit tests, `thoryn provision apply` to the sandbox, one minted test identity, a Playwright sign-in journey, teardown (revoke the identity, destroy what the run created). Plus a production deploy skeleton (`deploy.yml`) that reads a hand-set production client id until the app's own production apply ships (SSO-4120). |
 | End result | A working sign-in stack, on the customer's own domain once one is configured. | A running app that signs users in and protects its API. |
 
 No project hard-codes its workspace, its environment or its issuer. The Actions variables name the
@@ -138,19 +138,22 @@ Its grant is `manager` on the sandbox. The client's display name is its converge
 it is the repository's name; a local run uses `<repository>-local-<user>`, so a CI run's teardown never
 deletes a developer's client. `THORYN_APP_NAME` overrides both. It is not an Actions variable.
 
-**One variable the creation flow does not set: `THORYN_PRODUCTION_CLIENT_ID`** (SSO-3666; oauthy ADR
-2026-10-13, production clients declared in the config project). An application's production OAuth client is
-declared in the workspace's **config** project and converged by its reviewed production run; that run
-publishes the client's id into the application repository as a variable of the GitHub environment
-`production`. The application's `deploy.yml` reads it there and resolves its settings with
-`app-env.mjs --production` (workspace issuer, no environment path; client id from the variable). It is **not**
-declared in `template.json`: the declaration lists what the creation flow sets, and the orchestrator refuses
-an application declaration that is not exactly the four variables above — the manifest has no way yet to
-mark a variable another project publishes (a recorded gap). `npm run check` therefore lets a workflow read
-`vars.THORYN_PRODUCTION_CLIENT_ID` undeclared (like `THORYN_CLI_VERSION`), requires the application starters
-to do so, and refuses a job in the `production` GitHub environment that requests `id-token: write` or signs in
-to Thoryn: the app repository has no production identity. Guide:
-<https://thoryn.org/docs/guides/production-client-from-the-config-project>.
+**One variable the creation flow does not set: `THORYN_PRODUCTION_CLIENT_ID`** (SSO-3666). It is the
+application's production OAuth client id, a variable of the GitHub environment `production`, and the
+application's `deploy.yml` reads it there and resolves its settings with `app-env.mjs --production` (workspace
+issuer, no environment path; client id from the variable). **Today nothing sets it but a person.** The config
+project used to declare the production client and publish its id here (oauthy ADR 2026-10-13); oauthy ADR
+2026-10-25 retired that (`publishTo`, and the config project refuses an `application`). The target, from the
+same ADR, is that the application project owns its production client: a workspace admin approves a creation
+slot once, a reviewed production apply job in the application repository creates the client, and `deploy.yml`
+reads the id from that apply (SSO-4120, after SSO-4079 declares the app's trusts in the config project). Until
+then a workspace admin registers the client by hand and sets the variable.
+
+It is **not** declared in `template.json`: the declaration lists what the creation flow sets, and the
+orchestrator refuses an application declaration that is not exactly the four variables above. `npm run check`
+therefore lets a workflow read `vars.THORYN_PRODUCTION_CLIENT_ID` undeclared (like `THORYN_CLI_VERSION`),
+requires the application starters to do so, and refuses a job in the `production` GitHub environment that
+requests `id-token: write` or signs in to Thoryn: the app repository has no production identity yet.
 
 ### Config project
 

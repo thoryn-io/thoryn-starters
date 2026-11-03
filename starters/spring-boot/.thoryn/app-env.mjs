@@ -13,10 +13,10 @@
 // PRODUCTION (`--production`, or implied when THORYN_PRODUCTION_CLIENT_ID is set and THORYN_ENVIRONMENT is
 // not; the production deploy job, .github/workflows/deploy.yml):
 //   OIDC_ISSUER        the issuer of workspace THORYN_WORKSPACE itself — NO environment path
-//   OIDC_CLIENT_ID     THORYN_PRODUCTION_CLIENT_ID, the production client the workspace's CONFIG project
-//                      declared and published into this repository's GitHub environment `production`
-//                      (https://thoryn.org/docs/guides/production-client-from-the-config-project). This
-//                      repository never converges production, so there is no production apply result to read.
+//   OIDC_CLIENT_ID     THORYN_PRODUCTION_CLIENT_ID, a variable of this repository's GitHub environment
+//                      `production`, set by hand today: the config project's `publishTo` is retired (oauthy ADR
+//                      2026-10-25). This repository does not converge production yet, so there is no production
+//                      apply result to read; SSO-4120 adds that apply and reads the id from it.
 //   THORYN_WORKSPACE   the workspace slug
 //
 // Inputs, from the environment (GitHub Actions variables in CI; exported locally) or the flags below:
@@ -142,15 +142,14 @@ const GUIDE = "https://thoryn.org/docs/guides/production-client-from-the-config-
 /**
  * Production mode: the WORKSPACE issuer (`https://<workspace>.<platform host>`, no environment path — production
  * is the workspace's own plane), resolved through its discovery document like the sandbox's; and the client id
- * from THORYN_PRODUCTION_CLIENT_ID, which the workspace's config project published into this repository's
- * GitHub environment `production` when its production run converged the client. No apply result is read: an
- * application repository never converges production and has no production identity.
+ * from THORYN_PRODUCTION_CLIENT_ID, a variable of this repository's GitHub environment `production` that a person
+ * sets today. No apply result is read: the application repository has no production identity yet (SSO-4120).
  */
 export async function resolveProductionAppEnv({ workspace, platformIssuer, clientId, fetchImpl = fetch }) {
   requireWorkspace(platformIssuer, workspace);
   if (!clientId) {
     throw new AppEnvError(
-      `set ${PRODUCTION_CLIENT_ID_VARIABLE} to the production client id the workspace's config project published — a variable of this repository's GitHub environment "production", read only by a job that runs in it (${GUIDE})`,
+      `set ${PRODUCTION_CLIENT_ID_VARIABLE} to this app's production client id — a variable of this repository's GitHub environment "production", read only by a job that runs in it (${GUIDE})`,
     );
   }
   if (/\s/.test(clientId)) throw new AppEnvError(`${PRODUCTION_CLIENT_ID_VARIABLE} ${JSON.stringify(clientId)} is not a client id (it contains whitespace)`);

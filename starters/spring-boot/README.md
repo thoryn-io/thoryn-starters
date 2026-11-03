@@ -5,6 +5,13 @@ project** of a Thoryn workspace and runs against one of its sandbox environments
 sandbox is not written anywhere in this repository: CI reads them from GitHub Actions variables at run time
 (see [Configuration](#configuration)).
 
+A workspace's provisioning has two parts. Its **config project** declares the tenant: environments, sign-in
+methods, branding, users (sandbox test users included), roles, and the workload identity trusts of its
+application projects. Each **application project**, like this one, declares only its own OAuth client, in
+`.thoryn/provision.yaml` (`apiVersion: thoryn.io/application/v1`), and names the tenant's environment and roles
+by slug. Changing the sign-in configuration or adding a custom domain therefore needs no commit here. See
+[Product scope](https://thoryn.org/docs/product/scope).
+
 - **Sign-in:** Spring Security `oauth2Login`, authorization code with PKCE (S256), `state` and `nonce`. The
   ID token is validated with its signature pinned to ES256. Tokens stay in the server-side session; the
   browser only gets an `HttpOnly`, `SameSite=Lax` session cookie (`COOKIE_SECURE=true` when served over
@@ -117,7 +124,7 @@ above).
    client that already existed, which the apply only converged, stays.
 
 `.github/workflows/deploy.yml` runs on every push to `main`: the production deploy skeleton (see
-[Production](#production)). It skips with a notice until the production client is published.
+[Production](#production)). It skips with a notice until `THORYN_PRODUCTION_CLIENT_ID` is set.
 
 ## Configuration
 
@@ -146,14 +153,20 @@ repository's name; set `THORYN_APP_NAME` to override it.
 
 ## Production
 
-This repository never gets production access: its CI signs in to a **sandbox** only, and `provision.yaml`
-declares only sandbox resources. The app's **production OAuth client is declared in the workspace's config
-project** (`.thoryn/environments/production/provision.yaml` there, with the deployed `https` redirect URIs),
-where every change is a reviewed pull request plus an approved production run. That project publishes the
-client's id into this repository as the Actions variable `THORYN_PRODUCTION_CLIENT_ID` of the GitHub
-environment `production` (by hand, with `gh variable set … --env production`, until the automated
-`publishTo:` lands). Nothing production-related is committed here. The guide:
-<https://thoryn.org/docs/guides/production-client-from-the-config-project>.
+This repository's CI signs in to a **sandbox** only, and `provision.yaml` declares only the app's sandbox
+client. **No template creates the app's production client yet:**
+
+- The earlier path is retired (oauthy ADR 2026-10-25). The workspace's config project no longer declares an
+  application's production client or publishes its id into this repository (`publishTo`): a config project
+  declares the tenant only, and the CLI refuses an `application` there.
+- The target, from the same ADR: this repository owns its production client. A workspace admin approves a
+  creation slot for this repository once; a reviewed production apply job here then creates the client and owns
+  it, and `deploy.yml` reads the client id from that apply. This is tracked as SSO-4120.
+
+Until then, a workspace admin registers the production client by hand (`thoryn clients create`, or the
+console) with the deployed `https` redirect URIs, never a loopback one. Set its id on the GitHub environment
+`production`: `gh variable set THORYN_PRODUCTION_CLIENT_ID --env production --body <client id>`. Nothing
+production-related is committed here.
 
 `.github/workflows/deploy.yml` is the production deploy **skeleton**. Its job `deploy-production` runs in
 the GitHub environment `production`, reads `THORYN_PRODUCTION_CLIENT_ID` there, runs

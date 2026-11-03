@@ -113,7 +113,7 @@ test("resolveWiring keeps given values and asks the session only for what is mis
   assert.deepEqual(resolveWiring({}, () => null), { THORYN_ISSUER: undefined, THORYN_WORKSPACE: undefined, THORYN_ENVIRONMENT: undefined });
 });
 
-// SSO-3666 — production mode: the client id comes from the variable the config project published, the issuer
+// SSO-3666 — production mode: the client id comes from the variable THORYN_PRODUCTION_CLIENT_ID, the issuer
 // is the workspace's own (no environment path), and the sandbox mode above is untouched.
 import { MODES, PRODUCTION_CLIENT_ID_VARIABLE, resolveProductionAppEnv, selectMode } from "./app-env.mjs";
 
