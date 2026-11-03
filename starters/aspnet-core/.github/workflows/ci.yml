@@ -68,6 +68,8 @@ jobs:
       THORYN_WIF_CLIENT_ID: ${{ vars.THORYN_WIF_CLIENT_ID }}
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
       GH_TOKEN: ${{ github.token }}
+      # No OS keychain on a GitHub-hosted runner, which is discarded after the job: the CLI's documented CI opt-in to a token file.
+      THORYN_CI_PLAINTEXT_TOKENS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0

@@ -33,6 +33,9 @@
 //    GitHub environment `production`, resolves its settings with `app-env.mjs --production`, and has NO
 //    Thoryn identity: no `id-token: write`, no sign-in, no provisioning — the app repository never converges
 //    production (oauthy ADR 2026-10-13-production-clients-declared-in-the-config-project);
+//  - SSO-4095: every workflow job that runs the thoryn CLI — a starter's and this repository's own — sets
+//    THORYN_CI_PLAINTEXT_TOKENS: "1" at job or workflow level. A GitHub-hosted runner has no OS keychain, so without the
+//    CLI's CI opt-in `thoryn login --workload-identity` fails (TokenStoreUnavailableException) before anything runs;
 //  - SSO-3675: the publish matrix in .github/workflows/publish.yml names exactly the directories under
 //    starters/, so a starter cannot be added (or renamed) without being published to its template repository;
 //  - SSO-3675 (hardening): every publish.yml job that mints the publish App's token is bound to the GitHub
@@ -354,6 +357,7 @@ export function checkStarter(dir, schemas) {
         if (!declared[m[1]] && !OPTIONAL_VARS.has(m[1])) fail(`${wf} reads vars.${m[1]}, which template.json does not declare`);
       }
       if (/secrets\./.test(t)) fail(`${wf} reads a repository secret; the starters are secret-less`);
+      for (const job of jobsWithoutPlaintextTokenOptIn(YAML.parse(t))) fail(plaintextTokenProblem(wf, job));
     }
     for (const name of Object.keys(declared)) if (!read.has(name)) fail(`no workflow reads vars.${name}`);
     if (workflows.length && !/id-token:\s*write/.test(text)) fail("the workflow never requests id-token: write");
@@ -390,6 +394,40 @@ export function checkStarter(dir, schemas) {
   // into the developer's shell and never written to disk, so no starter may carry or read that file.
   if (existsSync(join(dir, ".thoryn/local.env"))) fail(".thoryn/local.env is retired (SSO-4087): the test identity is minted into the shell, never written to a file");
   if (existsSync(join(dir, ".thoryn/connection.json"))) fail(".thoryn/connection.json is gone: sign-in is declared by template.json connections");
+  return problems;
+}
+
+/** SSO-4095 — the thoryn CLI's CI opt-in to a plaintext token file (a GitHub-hosted runner has no OS keychain). */
+export const PLAINTEXT_TOKENS_VARIABLE = "THORYN_CI_PLAINTEXT_TOKENS";
+/** A step that runs the thoryn CLI: a `thoryn <command>` at command position, or a CI script that signs in / calls it. */
+const RUNS_THORYN = /(?:^|[\s;&|(`])thoryn\s+[a-z]|\bci\/(?:login|provision|teardown)\.sh\b/m;
+
+/**
+ * SSO-4095 — the jobs of a parsed workflow that run the thoryn CLI without THORYN_CI_PLAINTEXT_TOKENS: "1" in their own
+ * or the workflow's env. A step-level env does not count: every thoryn step of the job reads the token the sign-in stored.
+ */
+export function jobsWithoutPlaintextTokenOptIn(doc) {
+  const optedIn = (env) => env != null && typeof env === "object" && String(env[PLAINTEXT_TOKENS_VARIABLE]) === "1";
+  const missing = [];
+  for (const [id, job] of Object.entries(doc?.jobs ?? {})) {
+    const runsThoryn = (job?.steps ?? []).some((s) => typeof s?.run === "string" && RUNS_THORYN.test(s.run));
+    if (runsThoryn && !optedIn(job.env) && !optedIn(doc.env)) missing.push(id);
+  }
+  return missing;
+}
+
+const plaintextTokenProblem = (wf, job) =>
+  `${wf}: job ${job} runs the thoryn CLI but does not set ${PLAINTEXT_TOKENS_VARIABLE}: "1" (job or workflow env) — a GitHub-hosted runner has no OS keychain, so \`thoryn login\` fails with TokenStoreUnavailableException`;
+
+/** SSO-4095 — the same rule over this repository's own workflows (the staging e2e and the config plan sign in too). */
+export function checkRepositoryWorkflows(repoRoot) {
+  const dir = join(repoRoot, ".github/workflows");
+  if (!existsSync(dir)) return [];
+  const problems = [];
+  for (const wf of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).sort()) {
+    const doc = YAML.parse(readFileSync(join(dir, wf), "utf8"));
+    for (const job of jobsWithoutPlaintextTokenOptIn(doc)) problems.push(plaintextTokenProblem(`.github/workflows/${wf}`, job));
+  }
   return problems;
 }
 
@@ -487,6 +525,9 @@ function main() {
     for (const p of found) problems.push(`${starter}: ${p}`);
     if (!found.length) console.log(`✔ ${starter} validates as is (${JSON.parse(readFileSync(join(root, "starters", starter, ".thoryn/template.json"), "utf8")).kind})`);
   }
+  const workflowProblems = checkRepositoryWorkflows(root);
+  problems.push(...workflowProblems);
+  if (!workflowProblems.length) console.log(`✔ .github/workflows: every job that runs the thoryn CLI sets ${PLAINTEXT_TOKENS_VARIABLE}`);
   const matrixProblems = checkPublishMatrix(root);
   problems.push(...matrixProblems);
   if (!matrixProblems.length) console.log(`✔ ${PUBLISH_WORKFLOW} publishes exactly the starters/* directories`);

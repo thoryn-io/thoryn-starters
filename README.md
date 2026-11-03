@@ -101,7 +101,11 @@ repository starts with exactly those files.
    `--workspace` and `--environment`. CI never falls back to a session.
 
 `npm run check` fails when a render placeholder appears anywhere in this repository, when a starter's
-declaration drifts from the contract below, or when a workflow reads an undeclared variable.
+declaration drifts from the contract below, or when a workflow reads an undeclared variable. It also fails a
+workflow job (a starter's or this repository's own) that runs the `thoryn` CLI without
+`THORYN_CI_PLAINTEXT_TOKENS: "1"` in its env (SSO-4095): a GitHub-hosted runner has no OS keychain and is discarded
+after the job, so the CLI stores its token in a file only on that documented CI opt-in, and without it
+`thoryn login --workload-identity` fails before anything is provisioned.
 
 ### Application project
 

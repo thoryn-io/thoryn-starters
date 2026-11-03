@@ -98,7 +98,8 @@ pull requests too. Pull requests from forks get no OIDC token and skip.
 ## What a run leaves behind
 
 Nothing, when it finishes: `teardown.sh` revokes the run's test identity (`thoryn env test-identity revoke`)
-and runs `thoryn provision destroy`, which deletes the application client if the run created it. A run killed
+and runs `thoryn provision destroy` only when the run's `thoryn provision apply --output json` result shows it
+created the application client (action `create`). A client that already existed stays; the next run converges it. A run killed
 before teardown leaves one test identity (labelled `<client name>-<run id>-<attempt>`, visible in `thoryn env
 test-identity list --env ci-<stack>`) in its sandbox until its two-hour lifetime ends and the platform purges it;
 the next run is unaffected (the sandbox cap is 25 live identities).

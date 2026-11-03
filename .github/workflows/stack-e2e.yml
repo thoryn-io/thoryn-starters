@@ -73,6 +73,8 @@ jobs:
       THORYN_APP_NAME: thoryn-starters-${{ inputs.stack }}-ci
       THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
       GH_TOKEN: ${{ github.token }}
+      # No OS keychain on a GitHub-hosted runner, which is discarded after the job: the CLI's documented CI opt-in to a token file.
+      THORYN_CI_PLAINTEXT_TOKENS: "1"
       REPO_DIR: ${{ github.workspace }}/starters/${{ inputs.stack }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

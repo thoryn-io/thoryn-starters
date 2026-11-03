@@ -1,6 +1,7 @@
 node_modules/
 .env
-*.receipt.json
+last-apply.json
+last-apply.json.partial
 *.secret
 test-results/
 playwright-report/

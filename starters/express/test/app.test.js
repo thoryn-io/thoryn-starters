@@ -105,6 +105,18 @@ test("POST /logout ends the session and redirects to the end-session endpoint wi
   assert.equal(after.status, 302, "the old session cookie no longer signs in");
 });
 
+test("pages ask the browser for Referrer-Policy same-origin, so the sign-out form's POST carries this app's origin", async () => {
+  // Under helmet's default no-referrer a browser sends "Origin: null" on that POST and /logout refuses it.
+  const resp = await fetchApp("/");
+  assert.equal(resp.headers.get("referrer-policy"), "same-origin");
+});
+
+test("POST /logout with an opaque origin (Origin: null) is refused", async () => {
+  const cookie = await signIn();
+  const resp = await fetchApp("/logout", { method: "POST", headers: { cookie, origin: "null" } });
+  assert.equal(resp.status, 403);
+});
+
 test("POST /logout from a foreign origin is refused", async () => {
   const cookie = await signIn();
   const resp = await fetchApp("/logout", { method: "POST", headers: { cookie, origin: "https://evil.example" } });
