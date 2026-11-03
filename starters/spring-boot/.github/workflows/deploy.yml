@@ -1,20 +1,28 @@
-# Deploy the app to production — a skeleton for you to complete.
+# Provision the app's production client, then deploy — a skeleton for you to complete.
 #
-# This repository is an APPLICATION project. Today it has no production identity on Thoryn, and no template
-# creates its production OAuth client: the config project no longer publishes one (`publishTo` is retired, oauthy
-# ADR 2026-10-25). Until this repository's own production apply job ships (SSO-4120), a workspace admin registers
-# the client by hand and sets its id as the Actions variable THORYN_PRODUCTION_CLIENT_ID of the GitHub
-# environment `production`. The job below reads it there, resolves the production issuer from the platform's
-# discovery document (`.thoryn/app-env.mjs --production`) and hands OIDC_ISSUER / OIDC_CLIENT_ID to your deploy step. It signs in to
-# nothing and calls Thoryn for nothing, so it requests no id-token.
+# This repository is an APPLICATION project, and it owns its OAuth client in every environment (oauthy ADR 2026-10-25
+# decision 1). On every push to `main`, the job below:
+#   1. signs in with WORKLOAD IDENTITY as this repository's PRODUCTION trust: GitHub gives the job a short-lived OIDC
+#      token, and the trust (pinned to this repository and the GitHub environment `production`) exchanges it for a
+#      Thoryn token with the application scopes only (.thoryn/production/declaration.json);
+#   2. converges .thoryn/production/provision.yaml on the workspace's production plane (.thoryn/ci/production-apply.sh).
+#      The FIRST run is refused, by design: creating the client needs a creation slot for `<repository>-production` that a
+#      workspace admin approves once (oauthy ADR 2026-10-17). The red run's log names the exact command
+#      (`thoryn access reserve …`); a workspace admin runs it. Re-run after the approval and the client is created,
+#      owned by this repository;
+#   3. reads the client id from that apply's JSON result and resolves the production issuer from the platform's
+#      discovery document (`.thoryn/app-env.mjs --production`), so OIDC_ISSUER / OIDC_CLIENT_ID reach your deploy step
+#      with no hand-set variable.
 #
 # Variables it reads (none is a secret):
-#   THORYN_ISSUER                 repository variable — the platform base issuer, e.g. https://auth.stg.thoryn.org
-#   THORYN_WORKSPACE              repository variable — the workspace
-#   THORYN_PRODUCTION_CLIENT_ID   variable of the GitHub environment `production` — the app's production client,
-#                                 set by hand: `gh variable set THORYN_PRODUCTION_CLIENT_ID --env production
-#                                 --body <id>`
-# Until the variable is set the job skips with a notice, so a new repository stays green.
+#   THORYN_ISSUER                     repository variable — the platform base issuer, e.g. https://auth.stg.thoryn.org
+#   THORYN_WORKSPACE                  repository variable — the workspace
+#   THORYN_PRODUCTION_WIF_CLIENT_ID   variable of the GitHub environment `production` — the production trust's clientId
+#                                     (wi_…). The workspace's CONFIG project declares that trust, not this repository.
+#   THORYN_PRODUCTION_URL             variable of the GitHub environment `production` — the deployed https base URL;
+#                                     the client's redirect URIs are <url>/callback and <url>/signed-out
+#   THORYN_CLI_VERSION                optional — pin the thoryn CLI release
+# Until the two production variables are set the job skips with a notice, so a new repository stays green.
 name: Deploy
 
 on:
@@ -31,41 +39,69 @@ concurrency:
 
 jobs:
   deploy-production:
-    name: Deploy to production
+    name: Provision the production client and deploy
     runs-on: ubuntu-latest
-    # The GitHub environment that holds THORYN_PRODUCTION_CLIENT_ID; only a job running in it can read the
-    # variable. Add required reviewers to it (Settings → Environments → production) to approve every deploy.
+    # The production trust is pinned to `main` and to this GitHub environment; a dispatch from another branch would be
+    # refused at the token exchange, so it never starts. Add required reviewers to the environment (Settings →
+    # Environments → production) to approve every production apply and deploy.
+    if: github.ref == 'refs/heads/main'
     environment: production
     permissions:
-      contents: read # and NOT id-token: write — this job has no Thoryn identity and makes no Thoryn call
+      contents: read
+      id-token: write # lets the job request its own OIDC token: the production trust's only credential
     env:
       THORYN_ISSUER: ${{ vars.THORYN_ISSUER }}
       THORYN_WORKSPACE: ${{ vars.THORYN_WORKSPACE }}
-      THORYN_PRODUCTION_CLIENT_ID: ${{ vars.THORYN_PRODUCTION_CLIENT_ID }}
+      THORYN_PRODUCTION_WIF_CLIENT_ID: ${{ vars.THORYN_PRODUCTION_WIF_CLIENT_ID }}
+      THORYN_PRODUCTION_URL: ${{ vars.THORYN_PRODUCTION_URL }}
+      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}
+      # No OS keychain on a GitHub-hosted runner, which is discarded after the job: the CLI's documented CI opt-in to a token file.
+      THORYN_CI_PLAINTEXT_TOKENS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       - id: gate
-        name: Production client id set?
+        name: Production trust and URL set?
+        env:
+          IS_TEMPLATE: ${{ github.event.repository.is_template == true }}
+          THORYN_TEMPLATE_FILE: .thoryn/production/declaration.json
+        # Neither production variable set: skip with a notice (a new repository stays green). One set without the other,
+        # or a repository variable missing: fail, naming each.
         run: |
-          if [ -z "$THORYN_PRODUCTION_CLIENT_ID" ]; then
-            echo "::notice::THORYN_PRODUCTION_CLIENT_ID is not set on the GitHub environment 'production': register the app's production client and set its id there (see the README's Production section), so nothing is deployed yet."
+          if [ "$IS_TEMPLATE" != "true" ] && [ -z "$THORYN_PRODUCTION_WIF_CLIENT_ID" ] && [ -z "$THORYN_PRODUCTION_URL" ]; then
+            echo "::notice::THORYN_PRODUCTION_WIF_CLIENT_ID and THORYN_PRODUCTION_URL are not set on the GitHub environment 'production': the workspace's config project declares this repository's production trust, and you set the deployed URL (see the README's Production section). Nothing is provisioned or deployed yet."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            .thoryn/ci/gate.sh THORYN_ISSUER THORYN_WORKSPACE THORYN_PRODUCTION_WIF_CLIENT_ID THORYN_PRODUCTION_URL
           fi
+      - name: Install the thoryn CLI
+        if: steps.gate.outputs.ready == 'true'
+        run: .thoryn/ci/install-cli.sh
+      - name: Sign in (production workload identity) and apply the production client
+        if: steps.gate.outputs.ready == 'true'
+        run: .thoryn/ci/production-apply.sh
       - name: Resolve OIDC_ISSUER and OIDC_CLIENT_ID for production
         if: steps.gate.outputs.ready == 'true'
         # Composes https://<workspace>.<platform host> (no environment path), fetches its discovery document and
-        # exports the `issuer` it publishes (an active custom domain reaches the app with no commit here) plus
-        # OIDC_CLIENT_ID=$THORYN_PRODUCTION_CLIENT_ID. A missing or malformed variable fails and names it.
+        # exports the `issuer` it publishes (an active custom domain reaches the app with no commit here), plus the
+        # client id from the apply above (THORYN_PRODUCTION_APPLY_RESULT).
         run: node .thoryn/app-env.mjs --production --github-env
       - name: Deploy to your platform here
         if: steps.gate.outputs.ready == 'true'
-        # PLACEHOLDER — replace this step with your deployment (container push, PaaS CLI, Helm, …). OIDC_ISSUER
-        # and OIDC_CLIENT_ID are in the job's environment; pass them to the deployed app the way you pass every
-        # other setting. Nothing is deployed until you do.
+        # PLACEHOLDER — replace this step with your deployment (container push, PaaS CLI, Helm, …). OIDC_ISSUER,
+        # OIDC_CLIENT_ID and THORYN_PRODUCTION_URL (the app's APP_BASE_URL) are in the job's environment; pass them
+        # to the deployed app the way you pass every other setting. Nothing is deployed until you do.
         run: |
-          echo "::warning::deploy.yml: no deployment is configured yet. Replace the 'Deploy to your platform here' step; OIDC_ISSUER=$OIDC_ISSUER and OIDC_CLIENT_ID=$OIDC_CLIENT_ID are ready for it."
+          echo "::warning::deploy.yml: no deployment is configured yet. Replace the 'Deploy to your platform here' step; OIDC_ISSUER=$OIDC_ISSUER, OIDC_CLIENT_ID=$OIDC_CLIENT_ID and APP_BASE_URL=$THORYN_PRODUCTION_URL are ready for it."
+      # A refused plan or apply (the creation slot not approved yet, or a right this identity lacks) writes the fix
+      # request: the rights it lacks, each with the command a workspace admin runs (the log prints the same commands).
+      - name: Upload the fix request
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: thoryn-provision-request
+          path: ${{ runner.temp }}/thoryn-provision-request.json
+          if-no-files-found: ignore
+          retention-days: 7

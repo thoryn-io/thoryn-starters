@@ -173,24 +173,119 @@ test("the pre-SSO-4087 application template (provision/v1 with a kind: user, ten
   assert.equal(problems.filter((p) => /\.thoryn\/local\.env is retired/.test(p)).length, 1, problems.join("\n"));
 });
 
-// SSO-3666 — the production deploy skeleton of an application starter.
-test("an application starter must read the published production client id and resolve its settings in production mode", () => {
+// SSO-4120 — the application starter owns its production client: a reviewed production apply job creates it under a
+// creation slot, and deploy.yml reads the client id from that apply (oauthy ADR 2026-10-25 decision 1).
+test("an application starter must run the production apply and resolve its settings from it, in the production environment", () => {
   const dir = copy("express");
   rmSync(join(dir, ".github/workflows/deploy.yml"));
   const problems = checkStarter(dir, schemas).join("\n");
-  assert.match(problems, /no workflow reads vars\.THORYN_PRODUCTION_CLIENT_ID/);
-  assert.match(problems, /no workflow runs \.thoryn\/app-env\.mjs --production/);
-  assert.match(problems, /no workflow job runs in GitHub environment production/);
+  assert.match(problems, /no workflow reads vars\.THORYN_PRODUCTION_WIF_CLIENT_ID \(the production apply job\)/);
+  assert.match(problems, /no workflow reads vars\.THORYN_PRODUCTION_URL/);
+  assert.match(problems, /exactly one workflow job runs in GitHub environment production \(the production apply-and-deploy job\); found 0/);
 });
 
-test("the production deploy job holds no Thoryn identity: no id-token: write, no sign-in, no provisioning", () => {
-  const dir = copy("spring-boot");
-  edit(dir, ".github/workflows/deploy.yml", (t) => t.replace("    permissions:\n      contents: read", "    permissions:\n      contents: read\n      id-token: write"));
-  assert.match(checkStarter(dir, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and requests id-token: write/);
+test("the production job signs in as the production trust on main only, applies first, and runs no sandbox step", () => {
+  const noIdToken = copy("spring-boot");
+  edit(noIdToken, ".github/workflows/deploy.yml", (t) => t.replace("      id-token: write # lets the job request its own OIDC token: the production trust's only credential\n", ""));
+  assert.match(checkStarter(noIdToken, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and does not request id-token: write/);
 
-  const dir2 = copy("aspnet-core");
-  edit(dir2, ".github/workflows/deploy.yml", (t) => t.replace("        run: node .thoryn/app-env.mjs --production --github-env", "        run: |\n          .thoryn/ci/login.sh sandbox\n          node .thoryn/app-env.mjs --production --github-env"));
-  assert.match(checkStarter(dir2, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and signs in to or provisions Thoryn/);
+  const anyBranch = copy("express");
+  edit(anyBranch, ".github/workflows/deploy.yml", (t) => t.replace("    if: github.ref == 'refs/heads/main'\n", ""));
+  assert.match(checkStarter(anyBranch, schemas).join("\n"), /job deploy-production .* must run on main only/);
+
+  const noApply = copy("aspnet-core");
+  edit(noApply, ".github/workflows/deploy.yml", (t) => t.replace("        run: .thoryn/ci/production-apply.sh\n", "        run: echo skipped\n"));
+  assert.match(checkStarter(noApply, schemas).join("\n"), /does not run \.thoryn\/ci\/production-apply\.sh/);
+
+  const sandboxStep = copy("aspnet-core");
+  edit(sandboxStep, ".github/workflows/deploy.yml", (t) => t.replace("        run: .thoryn/ci/production-apply.sh\n", "        run: |\n          .thoryn/ci/provision.sh\n          .thoryn/ci/production-apply.sh\n"));
+  assert.match(checkStarter(sandboxStep, schemas).join("\n"), /deploy\.yml: job deploy-production runs in GitHub environment production and runs a sandbox step/);
+
+  const resolvedFirst = copy("express");
+  edit(resolvedFirst, ".github/workflows/deploy.yml", (t) =>
+    t.replace("        run: .thoryn/ci/production-apply.sh\n", "        run: node .thoryn/app-env.mjs --production --github-env\n").replace(
+      "        run: node .thoryn/app-env.mjs --production --github-env\n      - name: Deploy",
+      "        run: .thoryn/ci/production-apply.sh\n      - name: Deploy",
+    ));
+  assert.match(checkStarter(resolvedFirst, schemas).join("\n"), /resolves its settings before the production apply/);
+});
+
+test("the production apply never runs outside the production environment, and only one job runs in it", () => {
+  const dir = copy("express");
+  edit(dir, ".github/workflows/ci.yml", (t) => t.replace("        run: .thoryn/ci/provision.sh\n", "        run: |\n          .thoryn/ci/provision.sh\n          .thoryn/ci/production-apply.sh\n"));
+  assert.match(checkStarter(dir, schemas).join("\n"), /ci\.yml: job e2e runs \.thoryn\/ci\/production-apply\.sh outside the GitHub environment production/);
+
+  const twice = copy("express");
+  edit(twice, ".github/workflows/ci.yml", (t) => t.replace("  build:\n    name: Build and unit tests\n    runs-on: ubuntu-latest\n", "  build:\n    name: Build and unit tests\n    runs-on: ubuntu-latest\n    environment: production\n"));
+  assert.match(checkStarter(twice, schemas).join("\n"), /exactly one workflow job runs in GitHub environment production .*found 2/);
+});
+
+test("THORYN_PRODUCTION_CLIENT_ID is retired: a workflow that reads it fails, and declaring it is still outside the contract", () => {
+  const reads = copy("express");
+  edit(reads, ".github/workflows/deploy.yml", (t) => t.replace("      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}\n", "      THORYN_CLI_VERSION: ${{ vars.THORYN_CLI_VERSION }}\n      THORYN_PRODUCTION_CLIENT_ID: ${{ vars.THORYN_PRODUCTION_CLIENT_ID }}\n"));
+  const problems = checkStarter(reads, schemas).join("\n");
+  assert.match(problems, /a workflow reads vars\.THORYN_PRODUCTION_CLIENT_ID, which is retired \(SSO-4120\)/);
+  assert.doesNotMatch(problems, /which template\.json does not declare/);
+
+  const declares = copy("express");
+  editJson(declares, ".thoryn/template.json", (m) => {
+    m.variables.THORYN_PRODUCTION_CLIENT_ID = { level: "environment", environment: "production", description: "x" };
+    return m;
+  });
+  assert.match(checkStarter(declares, schemas).join("\n"), /declares THORYN_PRODUCTION_CLIENT_ID, which is not in the application contract/);
+});
+
+test("the production connection stays out of template.json: the creation flow's contract has no production connection", () => {
+  const dir = copy("express");
+  editJson(dir, ".thoryn/template.json", (m) => {
+    m.connections.production = { ...JSON.parse(readFileSync(join(dir, ".thoryn/production/declaration.json"), "utf8")).connections.production, grant: { relation: "manager", on: "workspace" } };
+    return m;
+  });
+  assert.match(checkStarter(dir, schemas).join("\n"), /an application project has no production connection/);
+});
+
+test("the production connection requests exactly the application ceiling, in the production GitHub environment", () => {
+  const wide = copy("express");
+  editJson(wide, ".thoryn/production/declaration.json", (m) => {
+    m.connections.production.scopes.push("tenant:test-identities.write");
+    return m;
+  });
+  assert.match(checkStarter(wide, schemas).join("\n"), /connection production requests exactly tenant:applications\.read, tenant:applications\.write, tenant:access\.read .*found .*tenant:test-identities\.write/);
+
+  const repoLevel = copy("express");
+  editJson(repoLevel, ".thoryn/production/declaration.json", (m) => {
+    m.variables.THORYN_PRODUCTION_WIF_CLIENT_ID = { level: "repository", description: "x" };
+    delete m.connections.production.production;
+    return m;
+  });
+  const problems = checkStarter(repoLevel, schemas).join("\n");
+  assert.match(problems, /THORYN_PRODUCTION_WIF_CLIENT_ID must be a variable of the GitHub environment "production"/);
+  assert.match(problems, /connection production must say production: true/);
+
+  const missing = copy("spring-boot");
+  rmSync(join(missing, ".thoryn/production/declaration.json"));
+  assert.match(checkStarter(missing, schemas).join("\n"), /\.thoryn\/production\/declaration\.json is missing/);
+});
+
+test("the production file: one application on the production plane, the fixed clientId a slot binds, https redirect URIs on the deployed URL only", () => {
+  const PROD = ".thoryn/production/provision.yaml";
+  const unfixed = copy("express");
+  edit(unfixed, PROD, (t) => t.replace('      clientId: "{{env.THORYN_APP_NAME}}-production"\n', ""));
+  assert.match(checkStarter(unfixed, schemas).join("\n"), /application\/web: spec\.clientId must be "\{\{env\.THORYN_APP_NAME\}\}-production", the fixed name a creation slot binds/);
+
+  const loopback = copy("express");
+  edit(loopback, PROD, (t) => t.replace('        - "{{env.THORYN_PRODUCTION_URL}}/callback"\n', '        - "{{env.THORYN_PRODUCTION_URL}}/callback"\n        - "http://127.0.0.1/callback"\n'));
+  assert.match(checkStarter(loopback, schemas).join("\n"), /application\/web http:\/\/127\.0\.0\.1\/callback: a production redirect URI is on the deployed URL/);
+
+  const sandboxed = copy("express");
+  edit(sandboxed, PROD, (t) => t.replace("    name: web\n", '    name: web\n    environment: "{{env.THORYN_ENVIRONMENT}}"\n'));
+  const problems = checkStarter(sandboxed, schemas).join("\n");
+  assert.match(problems, /application\/web names an environment; the production file converges the production plane/);
+  assert.match(problems, /\{\{env\.THORYN_ENVIRONMENT\}\} is not a production value/);
+
+  const tenantKind = copy("express");
+  edit(tenantKind, PROD, (t) => `${t}  - kind: role\n    name: editor\n    spec:\n      permissions: ["docs:write"]\n`);
+  assert.match(checkStarter(tenantKind, schemas).join("\n"), /role\/editor: the production file declares only the application's own client/);
 });
 
 const OPT_IN = '      THORYN_CI_PLAINTEXT_TOKENS: "1"\n';
@@ -239,16 +334,6 @@ test("SSO-4095: this repository's own workflows that sign in opt in too; removin
   assert.equal(problems.length, 2, problems.join("\n"));
   assert.match(problems[0], /^\.github\/workflows\/ci\.yml: job config-plan runs the thoryn CLI but does not set THORYN_CI_PLAINTEXT_TOKENS/);
   assert.match(problems[1], /^\.github\/workflows\/stack-e2e\.yml: job e2e runs the thoryn CLI but does not set THORYN_CI_PLAINTEXT_TOKENS/);
-});
-
-test("the published production client id is read without being declared: the creation flow does not set it", () => {
-  const dir = copy("express");
-  // Declaring it would make the orchestrator refuse the template (fixed contract); the validator says so.
-  editJson(dir, ".thoryn/template.json", (m) => {
-    m.variables.THORYN_PRODUCTION_CLIENT_ID = { level: "environment", environment: "production", description: "x" };
-    return m;
-  });
-  assert.match(checkStarter(dir, schemas).join("\n"), /declares THORYN_PRODUCTION_CLIENT_ID, which is not in the application contract/);
 });
 
 // SSO-3971 — the config starter is TENANT provisioning in the stub shape: the creation flow seeds the stub, its
