@@ -29,6 +29,10 @@ export function createApp(config, { fetchImpl = fetch, logger = console } = {}) 
           "form-action": ["'self'", new URL(config.issuer).origin],
         },
       },
+      // helmet's default, no-referrer, makes a browser send "Origin: null" on the app's own sign-out POST, which
+      // the cross-site check on /logout then refuses. same-origin sends the real origin to this app and still no
+      // referrer to anyone else.
+      referrerPolicy: { policy: "same-origin" },
     }),
   );
   app.use(express.static(fileURLToPath(new URL("../public", import.meta.url)), { index: false }));
