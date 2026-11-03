@@ -1,0 +1,30 @@
+# This application's PRODUCTION OAuth client — converged by deploy.yml's job `deploy-production`
+# (.thoryn/ci/production-apply.sh), signed in as the production trust (.thoryn/production/declaration.json).
+#
+# The application project owns its client in every environment (oauthy ADR 2026-10-25 decision 1). No `environment:`
+# means the workspace's production plane. A repository identity may not create on that plane by itself: the first run's
+# plan is red and asks for a CREATION SLOT for exactly this clientId (oauthy ADR 2026-10-17). A workspace admin approves
+# it once (`thoryn access reserve client:<wi_…> application:<clientId> --environment production`, the command the red
+# run's log names). The next run creates the client, and this repository owns it.
+#
+# The clientId is FIXED because the slot binds a name: `<repository>-production` (THORYN_APP_NAME defaults to the
+# repository's name). The sandbox client (.thoryn/provision.yaml) has a generated id, so the two never collide.
+#
+# Production only: https redirect URIs on the deployed URL, never a loopback or localhost URI (those are the
+# sandbox client's, for local development).
+#   THORYN_APP_NAME         the repository's name (production-apply.sh sets it)
+#   THORYN_PRODUCTION_URL   the deployed https base URL, a variable of the GitHub environment `production`
+apiVersion: thoryn.io/application/v1
+resources:
+  - kind: application
+    name: web
+    spec:
+      clientId: "{{env.THORYN_APP_NAME}}-production"
+      displayName: "{{env.THORYN_APP_NAME}}"
+      clientType: public                  # server-side app, but no secret to store: PKCE proves the client
+      grantTypes: ["authorization_code"]
+      scopes: ["openid", "profile", "email"]
+      redirectUris:
+        - "{{env.THORYN_PRODUCTION_URL}}/callback"
+      postLogoutRedirectUris:
+        - "{{env.THORYN_PRODUCTION_URL}}/signed-out"

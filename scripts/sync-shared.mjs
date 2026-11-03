@@ -28,6 +28,7 @@ const MAPPINGS = [
   ["thoryn/template.json", ".thoryn/template.json"],
   ["thoryn/provision.yaml", ".thoryn/provision.yaml"],
   ["thoryn/ci", ".thoryn/ci"],
+  ["thoryn/production", ".thoryn/production"],
 ];
 
 function files(path) {

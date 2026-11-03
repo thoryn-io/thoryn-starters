@@ -384,3 +384,77 @@ test("teardown.sh destroys nothing and turns red on a result it cannot read", ()
     assert.throws(() => r.calls(), /ENOENT/);
   }
 });
+
+// SSO-4120 — the production apply: the application project's own production client, created under a creation slot by the
+// reviewed production job (deploy.yml), signed in as the production trust the workspace's config project declares.
+function productionRepo(applied = { resources: [{ kind: "application", name: "web", id: "shop-production", environment: null, action: "create" }] }) {
+  const r = actionsRepo(applied);
+  cpSync(join(root, "starters/express/.thoryn/production"), join(r.dir, ".thoryn/production"), { recursive: true });
+  // Record the fix-request path the CLI is handed, next to each call.
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash
+echo "$* | fix-request=\${THORYN_FIX_REQUEST:-} | url=\${THORYN_PRODUCTION_URL:-} | app=\${THORYN_APP_NAME:-}" >> "${join(r.dir, "thoryn.log")}"
+if [ "$1 $2" = "provision apply" ]; then printf '%s' '${JSON.stringify(applied)}'; fi
+`);
+  return r;
+}
+const production = {
+  GITHUB_ACTIONS: "true",
+  GITHUB_REPOSITORY: "acme/shop",
+  THORYN_ISSUER: "https://auth.stg.thoryn.org",
+  THORYN_WORKSPACE: "acme",
+  THORYN_PRODUCTION_WIF_CLIENT_ID: "wi_prod0123",
+  THORYN_PRODUCTION_URL: "https://shop.acme.example/",
+};
+
+test("production-apply.sh signs in as the production trust (no sandbox in the audience, the application ceiling only) and converges the production file", () => {
+  const r = productionRepo();
+  const githubEnv = join(r.dir, "github.env");
+  const res = run(r, "production-apply.sh", [], { ...production, RUNNER_TEMP: r.runnerTemp, GITHUB_ENV: githubEnv });
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const calls = r.calls().map((c) => c.split(" | "));
+  assert.equal(calls.length, 3, r.calls().join("\n"));
+  assert.equal(
+    calls[0][0],
+    "login --workload-identity --issuer https://auth.stg.thoryn.org --workspace acme --client-id wi_prod0123 --audience https://acme.auth.stg.thoryn.org --scope tenant:applications.read tenant:applications.write tenant:access.read",
+  );
+  assert.equal(calls[1][0], "provision plan --file .thoryn/production/provision.yaml");
+  assert.equal(calls[2][0], "provision apply --file .thoryn/production/provision.yaml --yes --output json");
+  // The CLI gets the fix-request path (for a missing creation slot), the URL without its trailing slash and the repository's name.
+  const fixRequest = join(r.runnerTemp, "thoryn-provision-request.json");
+  for (const c of calls.slice(1)) assert.deepEqual(c.slice(1), [`fix-request=${fixRequest}`, "url=https://shop.acme.example", "app=shop"]);
+  const result = join(r.runnerTemp, "thoryn-production-apply.json");
+  assert.equal(readFileSync(githubEnv, "utf8"), `THORYN_PRODUCTION_APPLY_RESULT=${result}\n`);
+  assert.equal(JSON.parse(readFileSync(result, "utf8")).resources[0].id, "shop-production");
+  assert.match(res.stdout, /Production client 'shop-production' of workspace acme/);
+  assert.match(res.stdout, /Applied application web: shop-production \(create\)/);
+});
+
+test("production-apply.sh leaves no result when the apply is refused (a creation slot not approved yet)", () => {
+  const r = productionRepo();
+  writeFileSync(join(r.bin, "thoryn"), `#!/usr/bin/env bash\nif [ "$1 $2" = "provision apply" ]; then echo "refused: creator" >&2; exit 3; fi\n`);
+  const res = run(r, "production-apply.sh", [], { ...production, RUNNER_TEMP: r.runnerTemp });
+  assert.notEqual(res.status, 0);
+  assert.equal(existsSync(join(r.runnerTemp, "thoryn-production-apply.json")), false, "a result file means a finished apply");
+});
+
+test("production-apply.sh runs in GitHub Actions only, names a missing production variable where it lives, and refuses a non-https URL", () => {
+  const local = productionRepo();
+  const outside = run(local, "production-apply.sh", [], { ...production, GITHUB_ACTIONS: "", RUNNER_TEMP: local.runnerTemp });
+  assert.equal(outside.status, 1);
+  assert.match(outside.stderr, /runs in GitHub Actions only/);
+  assert.throws(() => local.calls(), /ENOENT/);
+
+  const missing = productionRepo();
+  const res = run(missing, "production-apply.sh", [], { ...production, THORYN_PRODUCTION_WIF_CLIENT_ID: "", RUNNER_TEMP: missing.runnerTemp });
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /::error title=Thoryn variable THORYN_PRODUCTION_WIF_CLIENT_ID is not set::.*GitHub environment "production"/);
+  assert.throws(() => missing.calls(), /ENOENT/);
+
+  for (const url of ["http://shop.acme.example", "http://127.0.0.1:8080", "https://shop.acme.example/?x=1", "shop.acme.example"]) {
+    const r = productionRepo();
+    const bad = run(r, "production-apply.sh", [], { ...production, THORYN_PRODUCTION_URL: url, RUNNER_TEMP: r.runnerTemp });
+    assert.equal(bad.status, 1, url);
+    assert.match(bad.stdout, /THORYN_PRODUCTION_URL is not an https URL/, url);
+    assert.throws(() => r.calls(), /ENOENT/, url);
+  }
+});

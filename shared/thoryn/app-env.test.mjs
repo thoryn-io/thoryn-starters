@@ -113,64 +113,86 @@ test("resolveWiring keeps given values and asks the session only for what is mis
   assert.deepEqual(resolveWiring({}, () => null), { THORYN_ISSUER: undefined, THORYN_WORKSPACE: undefined, THORYN_ENVIRONMENT: undefined });
 });
 
-// SSO-3666 — production mode: the client id comes from the variable THORYN_PRODUCTION_CLIENT_ID, the issuer
-// is the workspace's own (no environment path), and the sandbox mode above is untouched.
-import { MODES, PRODUCTION_CLIENT_ID_VARIABLE, resolveProductionAppEnv, selectMode } from "./app-env.mjs";
+// SSO-4120 — production mode: the client id comes from this repository's own production apply result (the app project
+// owns its production client, oauthy ADR 2026-10-25), the issuer is the workspace's own (no environment path), and the
+// sandbox mode above is untouched. THORYN_PRODUCTION_CLIENT_ID is retired.
+import { MODES, resolveProductionAppEnv, selectMode } from "./app-env.mjs";
+import * as appEnvModule from "./app-env.mjs";
 
-test("resolveProductionAppEnv composes the WORKSPACE issuer with no environment path and takes the client id from the variable", async () => {
+const productionApply = {
+  apply: { resources: [{ kind: "application", name: "web", id: "shop-production", environment: null, action: "create" }] },
+};
+
+test("resolveProductionAppEnv composes the WORKSPACE issuer with no environment path and takes the client id from the production apply result", async () => {
   const seen = [];
   const fetchImpl = async (url) => {
     seen.push(url);
     return new Response(JSON.stringify({ issuer: "https://login.acme.com/" }), { status: 200 });
   };
-  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", fetchImpl });
+  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", applyResult: productionApply, application: "web", fetchImpl });
   assert.deepEqual(seen, ["https://acme.auth.stg.thoryn.org/.well-known/openid-configuration"]);
   assert.deepEqual(vars, {
     OIDC_ISSUER: "https://login.acme.com",
-    OIDC_CLIENT_ID: "app-prod-9",
+    OIDC_CLIENT_ID: "shop-production",
     THORYN_WORKSPACE: "acme",
   });
   assert.equal("THORYN_ENVIRONMENT" in vars, false, "production has no environment slug");
-  assert.equal(toDotenv(vars), "OIDC_ISSUER=https://login.acme.com\nOIDC_CLIENT_ID=app-prod-9\nTHORYN_WORKSPACE=acme\n");
+  assert.equal(toDotenv(vars), "OIDC_ISSUER=https://login.acme.com\nOIDC_CLIENT_ID=shop-production\nTHORYN_WORKSPACE=acme\n");
 });
 
-test("resolveProductionAppEnv never reads an apply result: one naming another client changes nothing", async () => {
-  const fetchImpl = async () => new Response(JSON.stringify({ issuer: "https://acme.auth.stg.thoryn.org" }), { status: 200 });
-  const vars = await resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-prod-9", applyResult, fetchImpl });
-  assert.equal(vars.OIDC_CLIENT_ID, "app-prod-9");
-});
-
-test("resolveProductionAppEnv fails naming THORYN_PRODUCTION_CLIENT_ID when it is missing or not a client id, before any fetch", async () => {
+test("resolveProductionAppEnv names production-apply.sh when the result has no such application, before any fetch", async () => {
   const noFetch = async () => assert.fail("no fetch expected");
-  const base = { workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", fetchImpl: noFetch };
-  assert.equal(PRODUCTION_CLIENT_ID_VARIABLE, "THORYN_PRODUCTION_CLIENT_ID");
-  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: undefined }), /set THORYN_PRODUCTION_CLIENT_ID .*GitHub environment "production".*production-client-from-the-config-project/);
-  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: "" }), /set THORYN_PRODUCTION_CLIENT_ID/);
-  await assert.rejects(resolveProductionAppEnv({ ...base, clientId: "app-1\nOIDC_ISSUER=https://evil" }), /THORYN_PRODUCTION_CLIENT_ID .* contains whitespace/);
+  const base = { workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", application: "web", fetchImpl: noFetch };
+  await assert.rejects(resolveProductionAppEnv({ ...base, applyResult: {} }), /no application named "web" — run \.thoryn\/ci\/production-apply\.sh/);
+  await assert.rejects(resolveProductionAppEnv({ ...base, applyResult: productionApply, application: "api" }), /no application named "api"/);
+});
+
+test("THORYN_PRODUCTION_CLIENT_ID is retired: no export names it and production mode ignores it", async () => {
+  assert.equal("PRODUCTION_CLIENT_ID_VARIABLE" in appEnvModule, false);
+  const dir = mkdtempSync(join(tmpdir(), "app-env-"));
+  const res = appEnv(["--production"], { THORYN_ISSUER: "https://auth.stg.thoryn.org", THORYN_WORKSPACE: "acme", THORYN_PRODUCTION_CLIENT_ID: "hand-set", THORYN_PRODUCTION_APPLY_RESULT: join(dir, "none.json") });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /no apply result at .*none\.json — run \.thoryn\/ci\/production-apply\.sh/);
+  assert.doesNotMatch(res.stdout, /hand-set/);
 });
 
 test("resolveProductionAppEnv checks the workspace like the sandbox mode, and its discovery error points at THORYN_WORKSPACE only", async () => {
   const noFetch = async () => assert.fail("no fetch expected");
-  await assert.rejects(resolveProductionAppEnv({ workspace: "acme", platformIssuer: undefined, clientId: "app-1", fetchImpl: noFetch }), /THORYN_ISSUER/);
-  await assert.rejects(resolveProductionAppEnv({ workspace: undefined, platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: noFetch }), /set THORYN_WORKSPACE/);
-  await assert.rejects(resolveProductionAppEnv({ workspace: "Acme/x", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: noFetch }), /is not a workspace slug/);
+  const base = { applyResult: productionApply, application: "web" };
+  await assert.rejects(resolveProductionAppEnv({ ...base, workspace: "acme", platformIssuer: undefined, fetchImpl: noFetch }), /THORYN_ISSUER/);
+  await assert.rejects(resolveProductionAppEnv({ ...base, workspace: undefined, platformIssuer: "https://auth.stg.thoryn.org", fetchImpl: noFetch }), /set THORYN_WORKSPACE/);
+  await assert.rejects(resolveProductionAppEnv({ ...base, workspace: "Acme/x", platformIssuer: "https://auth.stg.thoryn.org", fetchImpl: noFetch }), /is not a workspace slug/);
   const notFound = async () => new Response("", { status: 404 });
   await assert.rejects(
-    resolveProductionAppEnv({ workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", clientId: "app-1", fetchImpl: notFound }),
+    resolveProductionAppEnv({ ...base, workspace: "acme", platformIssuer: "https://auth.stg.thoryn.org", fetchImpl: notFound }),
     (e) => e instanceof AppEnvError && /HTTP 404 — check THORYN_WORKSPACE$/.test(e.message),
   );
 });
 
-test("selectMode: asked for wins; otherwise production only when the production id is set and no sandbox is", () => {
+test("selectMode: production only when asked for, never implied by the environment", () => {
   assert.deepEqual(MODES, ["sandbox", "production"]);
-  assert.equal(selectMode({ mode: "production", productionClientId: undefined, environment: "dev" }), "production");
-  assert.equal(selectMode({ mode: "sandbox", productionClientId: "app-1", environment: undefined }), "sandbox");
-  assert.equal(selectMode({ productionClientId: "app-1", environment: undefined }), "production");
-  assert.equal(selectMode({ productionClientId: "app-1", environment: "" }), "production");
-  // Both set: a sandbox run, as before this mode existed.
-  assert.equal(selectMode({ productionClientId: "app-1", environment: "dev" }), "sandbox");
+  assert.equal(selectMode({ mode: "production" }), "production");
+  assert.equal(selectMode({ mode: "sandbox" }), "sandbox");
+  // The retired variable no longer implies production (SSO-3666 did, from THORYN_PRODUCTION_CLIENT_ID).
+  assert.equal(selectMode({ productionClientId: "app-1", environment: undefined }), "sandbox");
   assert.equal(selectMode({}), "sandbox");
   assert.throws(() => selectMode({ mode: "staging" }), /--mode must be one of sandbox, production/);
+});
+
+test("app-env.mjs --production reads THORYN_PRODUCTION_APPLY_RESULT (or --apply-result), never the sandbox's result", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "app-env-"));
+  const prod = join(dir, "thoryn-production-apply.json");
+  const sandbox = join(dir, "thoryn-apply.json");
+  writeFileSync(prod, JSON.stringify(productionApply));
+  writeFileSync(sandbox, JSON.stringify(applyResult));
+  const wiring = { THORYN_ISSUER: "https://127.0.0.1:1", THORYN_WORKSPACE: "acme", THORYN_APPLY_RESULT: sandbox };
+  // No production result named: the sandbox's THORYN_APPLY_RESULT is not a fallback.
+  assert.match(appEnv(["--production"], wiring).stderr, /no apply result at \(none given\) — run \.thoryn\/ci\/production-apply\.sh/);
+  // Named either way, the client id is read before the (here unreachable) discovery call.
+  for (const run of [appEnv(["--production"], { ...wiring, THORYN_PRODUCTION_APPLY_RESULT: prod }), appEnv(["--production", "--apply-result", prod], wiring)]) {
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /could not reach https:\/\/acme\.127\.0\.0\.1:1\/\.well-known\/openid-configuration/);
+  }
 });
 
 // SSO-4097 — the command line: the apply result is named by --apply-result (or THORYN_APPLY_RESULT), and a missing one is explained.
@@ -185,7 +207,7 @@ test("app-env.mjs names the missing apply result and how to make it; the retired
   const wiring = { THORYN_ISSUER: "https://auth.stg.thoryn.org", THORYN_WORKSPACE: "acme", THORYN_ENVIRONMENT: "dev" };
   const missing = appEnv(["--apply-result", join(dir, "thoryn-apply.json")], wiring);
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /no apply result at .*thoryn-apply\.json — run \.thoryn\/ci\/provision\.sh first: it saves `thoryn provision apply --output json` there/);
+  assert.match(missing.stderr, /no apply result at .*thoryn-apply\.json — run \.thoryn\/ci\/provision\.sh, which saves `thoryn provision apply --file \.thoryn\/provision\.yaml --output json` there/);
   // THORYN_APPLY_RESULT is the default the CI steps share.
   const viaEnv = appEnv([], { ...wiring, THORYN_APPLY_RESULT: join(dir, "from-env.json") });
   assert.match(viaEnv.stderr, /no apply result at .*from-env\.json/);

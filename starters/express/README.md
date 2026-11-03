@@ -104,7 +104,8 @@ above).
 |---|---|
 | `template.json` | **What this repository needs from Thoryn:** the Actions variables (see [Configuration](#configuration)), and connection `sandbox`, the workload identity trust CI signs in with (its exact scopes and grant). No secret, no workspace name. |
 | `provision.yaml` | **What this app owns** (`apiVersion: thoryn.io/application/v1`): its OAuth client, in the sandbox named by `{{env.THORYN_ENVIRONMENT}}` (the CLI fills it in from the environment). Nothing workspace-wide, and no user: the test account is minted per run, not declared. |
-| `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` after provisioning (sandbox), or — `--production` — for the production deploy from `THORYN_PRODUCTION_CLIENT_ID` (see [Production](#production)). |
+| `app-env.mjs` | Resolves `OIDC_ISSUER` / `OIDC_CLIENT_ID` from an apply's result: the sandbox's after provisioning, or — `--production` — the production apply's, for the deploy (see [Production](#production)). |
+| `production/` | The **production** client (`provision.yaml`) and who applies it (`declaration.json`: the production trust and the two variables of the GitHub environment `production`). |
 | `ci/` | The steps the pipeline runs (`gate.sh`, `login.sh` and `require-vars.sh` read and check the variables). |
 
 ## CI
@@ -121,8 +122,8 @@ above).
    destroy the client only when this run's apply created it (`.thoryn/ci/teardown.sh`, `if: always()`). A
    client that already existed, which the apply only converged, stays.
 
-`.github/workflows/deploy.yml` runs on every push to `main`: the production deploy skeleton (see
-[Production](#production)). It skips with a notice until `THORYN_PRODUCTION_CLIENT_ID` is set.
+`.github/workflows/deploy.yml` runs on every push to `main`: it applies the app's production client, then deploys
+(see [Production](#production)). It skips with a notice until the production trust and URL are set.
 
 ## Configuration
 
@@ -151,31 +152,39 @@ repository's name; set `THORYN_APP_NAME` to override it.
 
 ## Production
 
-This repository's CI signs in to a **sandbox** only, and `provision.yaml` declares only the app's sandbox
-client. **No template creates the app's production client yet:**
+This repository owns its production OAuth client, as it owns its sandbox one (oauthy ADR 2026-10-25). The
+production client is declared in `.thoryn/production/provision.yaml`: clientId `<repository>-production`, the
+deployed `https` redirect URIs, never a loopback one.
 
-- The earlier path is retired (oauthy ADR 2026-10-25). The workspace's config project no longer declares an
-  application's production client or publishes its id into this repository (`publishTo`): a config project
-  declares the tenant only, and the CLI refuses an `application` there.
-- The target, from the same ADR: this repository owns its production client. A workspace admin approves a
-  creation slot for this repository once; a reviewed production apply job here then creates the client and owns
-  it, and `deploy.yml` reads the client id from that apply. This is tracked as SSO-4120.
+`.github/workflows/deploy.yml` runs on every push to `main`. Its job `deploy-production` runs in the GitHub
+environment `production`; add required reviewers there to approve each run. It:
 
-Until then, a workspace admin registers the production client by hand (`thoryn clients create`, or the
-console) with the deployed `https` redirect URIs, never a loopback one. Set its id on the GitHub environment
-`production`: `gh variable set THORYN_PRODUCTION_CLIENT_ID --env production --body <client id>`. Nothing
-production-related is committed here.
+1. signs in with workload identity as this repository's **production trust** (no stored secret), with the
+   application scopes only;
+2. runs `thoryn provision apply` on the workspace's production plane (`.thoryn/ci/production-apply.sh`);
+3. runs `node .thoryn/app-env.mjs --production --github-env`. That composes `https://<workspace>.<platform host>`
+   (no environment path), fetches its discovery document and exports the `issuer` it publishes as `OIDC_ISSUER`,
+   and `OIDC_CLIENT_ID` from step 2's result;
+4. ends in a placeholder step for your deployment. `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `THORYN_PRODUCTION_URL`
+   (the app's `APP_BASE_URL`) are ready for it.
 
-`.github/workflows/deploy.yml` is the production deploy **skeleton**. Its job `deploy-production` runs in
-the GitHub environment `production`, reads `THORYN_PRODUCTION_CLIENT_ID` there, runs
-`node .thoryn/app-env.mjs --production --github-env` — which composes `https://<workspace>.<platform host>`
-(no environment path), fetches its discovery document and exports the `issuer` it publishes as
-`OIDC_ISSUER`, and `OIDC_CLIENT_ID` from the variable — and ends in a placeholder step for your deployment.
-It requests no `id-token` and makes no Thoryn call: the app repository has no production identity. Until the
-variable is set the job skips with a notice; a set but malformed value fails and names it.
+**Set it up once:**
 
-Locally, `THORYN_PRODUCTION_CLIENT_ID=<id> node .thoryn/app-env.mjs --production` prints the same values
-(the workspace and platform come from your `thoryn login` session when not exported).
+1. **The production trust.** The workspace's **config** project declares it (`kind: workloadIdentityTrust`,
+   pinned to this repository and its GitHub environment `production`, scopes `tenant:applications.read`,
+   `tenant:applications.write`, `tenant:access.read`). This repository never declares its own trust. Set the
+   trust's clientId on the environment: `gh variable set THORYN_PRODUCTION_WIF_CLIENT_ID --env production --body
+   <wi_…>`.
+2. **The deployed URL.** `gh variable set THORYN_PRODUCTION_URL --env production --body https://<your app>`.
+3. **The creation slot.** The first run after that is red, by design. Creating an application on the production
+   plane needs a workspace admin's approval for exactly this name (a creation slot, oauthy ADR 2026-10-17). The
+   run's log names the command, and a workspace admin runs it: `thoryn access reserve client:<wi_…>
+   application:<repository>-production --environment production`. Re-run the job: it creates the client, and
+   this repository owns it from then on.
+
+Until both variables are set the job skips with a notice, so a new repository stays green. If only one is set,
+the job fails and names the other. `THORYN_PRODUCTION_CLIENT_ID`, the hand-set id the job read before, is
+retired.
 
 ## Next steps
 
