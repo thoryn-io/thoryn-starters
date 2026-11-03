@@ -158,3 +158,22 @@ resources:
   #   spec:
   #     slug: "staging"
   #     displayName: "Staging"
+  #
+  # An app project's PRODUCTION CI identity (tenant:workload-identity.*): the trust its reviewed production apply job
+  # (deploy.yml, GitHub environment `production`, main only) signs in with. A person creates a production trust once
+  # (a machine cannot: 403 elevated_action_requires_person); the app's setup does it, grants this repository's
+  # production identity `owner` on it, and proposes this entry from the branch `thoryn/app-<app repository>` (oauthy ADR
+  # 2026-11-03, SSO-4079). From then on this file converges it. Exactly the application ceiling, no plan profile: the
+  # app creates its production client under a creation slot a workspace admin approves (oauthy ADR 2026-10-17).
+  # - kind: workloadIdentityTrust
+  #   name: my-app-production
+  #   spec:
+  #     provider: github_actions
+  #     github:
+  #       repository: "my-org/my-app"
+  #       ownerId: 123456
+  #       repositoryId: 7890123
+  #       environment: production
+  #       ref: refs/heads/main
+  #     scopes: ["tenant:applications.read", "tenant:applications.write", "tenant:access.read"]
+  #     confirmProduction: true

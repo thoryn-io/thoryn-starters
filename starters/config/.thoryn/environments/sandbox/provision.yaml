@@ -65,14 +65,20 @@ resources:
   #     format: markdown
   #     bodyFile: legal/{{env.THORYN_SANDBOX_ENVIRONMENT}}/terms-of-use.md
   #
-  # An app project's CI identity in this sandbox (tenant:workload-identity.*): a repository never declares its own
-  # trust, so the config project does. Its scopes: tenant:applications.read tenant:applications.write
-  # tenant:access.read tenant:environments.read — and nothing wider.
+  # An app project's CI identity in this sandbox (tenant:workload-identity.*). A repository never declares its own trust,
+  # so the config project does (oauthy ADR 2026-10-25 decision 3). You rarely write this by hand: when an app project is
+  # set up (the Thoryn GitHub App, or `thoryn project init app --config-repo`), the person setting it up creates the
+  # trust, the setup grants this repository's sandbox identity `owner` on it, and it opens a pull request here from the
+  # branch `thoryn/app-<app repository>` that adds the entry exactly as it is live, so applying it changes nothing
+  # (oauthy ADR 2026-11-03, SSO-4079). The name is the live trust's name: a trust converges by name. Its scopes are the
+  # app template's sandbox connection, and nothing wider.
   # - kind: workloadIdentityTrust
-  #   name: my-app
+  #   name: my-app-sandbox
   #   environment: "{{env.THORYN_SANDBOX_ENVIRONMENT}}"
   #   spec:
   #     provider: github_actions
   #     github:
   #       repository: "my-org/my-app"
-  #     scopes: ["tenant:applications.read", "tenant:applications.write", "tenant:access.read", "tenant:environments.read"]
+  #       ownerId: 123456
+  #       repositoryId: 7890123
+  #     scopes: ["tenant:applications.read", "tenant:applications.write", "tenant:access.read", "tenant:environments.read", "tenant:test-identities.write"]
