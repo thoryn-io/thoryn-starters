@@ -206,6 +206,26 @@ For an application project:
   the ceiling, the grant is the gate (ADR 2026-09-15, platform resource authorization);
 - the four repository variables.
 
+When the workspace has a config project, the creation flow also sets up what the config project declares and owns
+(oauthy ADR 2026-11-03, SSO-4079). It needs a version of the Thoryn GitHub App or `thoryn project init app
+--config-repo` that ships SSO-4079:
+
+- a **production** trust, read from `.thoryn/production/declaration.json`, not `template.json`, so that older CLIs
+  keep accepting the template. The person setting up creates it, because a machine cannot create a production trust.
+  It is pinned to the repository, its GitHub environment `production` and `main`, with exactly
+  `tenant:applications.read`, `tenant:applications.write` and `tenant:access.read`, and no grant and no plan
+  profile. Its client creates the application's production client under a creation slot a workspace admin approves
+  (oauthy ADR 2026-10-17);
+- the GitHub environment `production`, restricted to `main`, and `THORYN_PRODUCTION_WIF_CLIENT_ID` in it.
+  `THORYN_PRODUCTION_URL` is yours to set (`--production-url` sets it from the CLI);
+- `owner` on both trusts for the config project's identity on each plane. Only a workspace admin can grant it. When
+  the person setting up is not an admin, the config project's first plan asks an admin for it through consent;
+- a pull request on the config repository, from the branch `thoryn/app-<repository>`, that declares both trusts
+  exactly as they are live. The setup pull request names it.
+
+Without a config project, the creation flow creates the sandbox trust only and says that nothing owns it yet.
+Setting up the config project later imports the trusts its identity can see.
+
 It does **not** register the application client. The application's own CI does that on its first run
 (`thoryn provision apply`), and adopts it on later runs. It does not set the application's issuer or
 client id either; those are resolved at run time.
